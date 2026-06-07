@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="fuse-mark" x1="10" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e8f7ff"/>
+      <stop offset="0.5" stop-color="#7df0c8"/>
+      <stop offset="1" stop-color="#ff8d6a"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="#101112"/>
+  <path d="M19 45V17h28v8H28v7h16v8H28v5H19Z" fill="url(#fuse-mark)"/>
+</svg>
