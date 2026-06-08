@@ -11,6 +11,7 @@ interface ModuleCardProps {
   children: ReactNode;
   headerActions?: ReactNode;
   onCycleSize: (id: ModuleId) => void;
+  onHide: (id: ModuleId) => void;
   onResizeStart: (event: React.PointerEvent<HTMLButtonElement>, id: ModuleId) => void;
 }
 
@@ -24,12 +25,14 @@ export function ModuleCard({
   children,
   headerActions,
   onCycleSize,
+  onHide,
   onResizeStart,
 }: ModuleCardProps) {
   const style = {
     "--cols": block.cols,
     "--rows": block.rows,
     "--min-h": `${block.rows <= 1 ? 194 : 194 + (block.rows - 1) * 206}px`,
+    viewTransitionName: `module-${id}`,
   } as CSSProperties;
 
   return (
@@ -62,6 +65,15 @@ export function ModuleCard({
             onClick={() => onCycleSize(id)}
           >
             <span aria-hidden="true">↗</span>
+          </button>
+          <button
+            className="icon-btn"
+            type="button"
+            title="Скрыть блок"
+            aria-label={`Скрыть блок ${title}`}
+            onClick={() => onHide(id)}
+          >
+            <span aria-hidden="true">×</span>
           </button>
         </div>
       </header>

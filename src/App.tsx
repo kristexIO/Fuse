@@ -65,6 +65,7 @@ import type {
 const layoutStorageKey = "fuse.layout.v2";
 const playbackStorageKey = "fuse.playback.v1";
 type PlaybackBackend = "rust" | "webview";
+type LayoutUpdater = (current: LayoutProfile) => LayoutProfile | Partial<LayoutProfile>;
 
 interface StoredPlayback {
   trackId: number | null;
@@ -90,6 +91,8 @@ const moduleMeta: Record<ModuleId, { title: string; icon: string }> = {
   playlists: { title: "Плейлисты", icon: "▦" },
   stats: { title: "Сводка", icon: "◇" },
 };
+
+const coreWorkspaceModules: ModuleId[] = ["now", "player", "collection", "queue"];
 
 const sizeCycle = [
   { cols: 3, rows: 1 },
@@ -239,6 +242,10 @@ function App() {
 
   const visibleModules = useMemo(
     () => layout.order.filter((id) => !layout.hidden.includes(id)),
+    [layout],
+  );
+  const hiddenModules = useMemo(
+    () => layout.order.filter((id) => layout.hidden.includes(id)),
     [layout],
   );
 
@@ -521,6 +528,22 @@ function App() {
     }
   }, [currentTrack, pendingPlayback, playbackBackend]);
 
+  function updateLayoutWithTransition(updater: LayoutUpdater) {
+    const apply = () => {
+      setLayout((current) => normalizeLayout(updater(current)));
+    };
+    const transitionDocument = document as Document & {
+      startViewTransition?: (callback: () => void) => void;
+    };
+
+    if (transitionDocument.startViewTransition && !prefersReducedMotion()) {
+      transitionDocument.startViewTransition(apply);
+      return;
+    }
+
+    apply();
+  }
+
   function setTheme(theme: ThemeName) {
     setLayout((current) => normalizeLayout({ ...current, theme }));
   }
@@ -530,25 +553,60 @@ function App() {
   }
 
   function toggleModule(id: ModuleId) {
-    setLayout((current) => {
+    updateLayoutWithTransition((current) => {
       const hidden = current.hidden.includes(id)
         ? current.hidden.filter((item) => item !== id)
         : [...current.hidden, id];
-      return normalizeLayout({ ...current, hidden });
+      return { ...current, hidden };
     });
   }
 
+  function showModule(id: ModuleId) {
+    updateLayoutWithTransition((current) => ({
+      ...current,
+      hidden: current.hidden.filter((item) => item !== id),
+    }));
+  }
+
+  function hideModule(id: ModuleId) {
+    updateLayoutWithTransition((current) => ({
+      ...current,
+      hidden: current.hidden.includes(id) ? current.hidden : [...current.hidden, id],
+    }));
+  }
+
+  function hideAllModules() {
+    updateLayoutWithTransition((current) => ({
+      ...current,
+      hidden: [...current.order],
+    }));
+  }
+
+  function showAllModules() {
+    updateLayoutWithTransition((current) => ({
+      ...current,
+      hidden: [],
+    }));
+  }
+
+  function showCoreWorkspace() {
+    updateLayoutWithTransition((current) => ({
+      ...current,
+      hidden: current.order.filter((id) => !coreWorkspaceModules.includes(id)),
+    }));
+  }
+
   function resetLayout() {
-    setLayout(defaultLayout);
+    updateLayoutWithTransition(() => defaultLayout);
     setScanSummary(null);
   }
 
   function applyLayoutPreset(name: string) {
-    setLayout((current) => applyPreset(current, name));
+    updateLayoutWithTransition((current) => applyPreset(current, name));
   }
 
   function cycleModuleSize(id: ModuleId) {
-    setLayout((current) => {
+    updateLayoutWithTransition((current) => {
       const block = getBlock(current, id);
       const currentIndex = sizeCycle.findIndex(
         (size) => size.cols === block.cols && size.rows === block.rows,
@@ -1173,36 +1231,58 @@ function App() {
           onDragEnd={handleDragEnd}
           onDrop={handleDragEnd}
         >
-          {visibleModules.map((id) => {
-            const meta = moduleMeta[id];
-            return (
-              <ModuleCard
-                key={id}
-                id={id}
-                title={meta.title}
-                icon={meta.icon}
-                block={getBlock(layout, id)}
-                dragging={dragging === id}
-                dropTarget={dropTarget === id}
-                onCycleSize={cycleModuleSize}
-                onResizeStart={handleResizeStart}
-                headerActions={
-                  id === "now" ? (
-                    <button
-                      className={`icon-btn ${showLyrics ? "is-active" : ""}`}
-                      type="button"
-                      title={showLyrics ? "Показать обложку" : "Показать текст песни"}
-                      onClick={() => setShowLyrics(!showLyrics)}
-                    >
-                      💬
-                    </button>
-                  ) : undefined
-                }
-              >
-                {renderModule(id)}
-              </ModuleCard>
-            );
-          })}
+          {visibleModules.length === 0 ? (
+            <WorkspaceEmpty
+              hiddenModules={hiddenModules}
+              onImportTracks={importTracks}
+              onShowAll={showAllModules}
+              onShowCore={showCoreWorkspace}
+              onShowModule={showModule}
+              onStudio={() => applyLayoutPreset("Studio")}
+            />
+          ) : (
+            <>
+              {visibleModules.map((id) => {
+                const meta = moduleMeta[id];
+                return (
+                  <ModuleCard
+                    key={id}
+                    id={id}
+                    title={meta.title}
+                    icon={meta.icon}
+                    block={getBlock(layout, id)}
+                    dragging={dragging === id}
+                    dropTarget={dropTarget === id}
+                    onCycleSize={cycleModuleSize}
+                    onHide={hideModule}
+                    onResizeStart={handleResizeStart}
+                    headerActions={
+                      id === "now" ? (
+                        <button
+                          className={`icon-btn ${showLyrics ? "is-active" : ""}`}
+                          type="button"
+                          title={showLyrics ? "Показать обложку" : "Показать текст песни"}
+                          onClick={() => setShowLyrics(!showLyrics)}
+                        >
+                          💬
+                        </button>
+                      ) : undefined
+                    }
+                  >
+                    {renderModule(id)}
+                  </ModuleCard>
+                );
+              })}
+
+              {hiddenModules.length > 0 && (
+                <HiddenModuleDock
+                  hiddenModules={hiddenModules}
+                  onShowAll={showAllModules}
+                  onShowModule={showModule}
+                />
+              )}
+            </>
+          )}
         </section>
 
         <InspectorPanel
@@ -1221,6 +1301,9 @@ function App() {
           onDensityChange={setDensity}
           onPreset={applyLayoutPreset}
           onToggleModule={toggleModule}
+          onHideAll={hideAllModules}
+          onShowAll={showAllModules}
+          onShowCore={showCoreWorkspace}
           onReset={resetLayout}
           onImport={importFolders}
           onImportTracks={importTracks}
@@ -1231,6 +1314,80 @@ function App() {
           onTrackEditorChange={setTrackEditorDraft}
         />
       </main>
+    </div>
+  );
+}
+
+interface WorkspaceEmptyProps {
+  hiddenModules: ModuleId[];
+  onImportTracks: () => void;
+  onShowAll: () => void;
+  onShowCore: () => void;
+  onShowModule: (id: ModuleId) => void;
+  onStudio: () => void;
+}
+
+function WorkspaceEmpty({
+  hiddenModules,
+  onImportTracks,
+  onShowAll,
+  onShowCore,
+  onShowModule,
+  onStudio,
+}: WorkspaceEmptyProps) {
+  return (
+    <div className="workspace-empty">
+      <div className="empty-kicker">0 блоков</div>
+      <h2>Рабочее поле пустое</h2>
+      <div className="empty-actions">
+        <button className="import-btn" type="button" onClick={onShowAll}>
+          Показать все
+        </button>
+        <button className="secondary-btn" type="button" onClick={onShowCore}>
+          Рабочий минимум
+        </button>
+        <button className="secondary-btn" type="button" onClick={onStudio}>
+          Studio
+        </button>
+        <button className="secondary-btn" type="button" onClick={onImportTracks}>
+          Добавить треки
+        </button>
+      </div>
+      {hiddenModules.length > 0 && (
+        <div className="restore-grid" aria-label="Скрытые блоки">
+          {hiddenModules.map((id) => (
+            <button className="restore-chip" type="button" key={id} onClick={() => onShowModule(id)}>
+              <span aria-hidden="true">{moduleMeta[id].icon}</span>
+              {moduleMeta[id].title}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface HiddenModuleDockProps {
+  hiddenModules: ModuleId[];
+  onShowAll: () => void;
+  onShowModule: (id: ModuleId) => void;
+}
+
+function HiddenModuleDock({ hiddenModules, onShowAll, onShowModule }: HiddenModuleDockProps) {
+  return (
+    <div className="hidden-dock" aria-label="Скрытые блоки">
+      <div className="hidden-dock-label">Скрыто: {hiddenModules.length}</div>
+      <div className="hidden-dock-list">
+        {hiddenModules.map((id) => (
+          <button className="restore-chip" type="button" key={id} onClick={() => onShowModule(id)}>
+            <span aria-hidden="true">{moduleMeta[id].icon}</span>
+            {moduleMeta[id].title}
+          </button>
+        ))}
+      </div>
+      <button className="secondary-btn" type="button" onClick={onShowAll}>
+        Показать все
+      </button>
     </div>
   );
 }
@@ -1281,6 +1438,10 @@ function getGridMetrics(workspace: HTMLElement) {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 function readStoredPlayback(): StoredPlayback {

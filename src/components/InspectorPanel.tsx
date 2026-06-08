@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import type { Density, LayoutProfile, LibraryFolder, ModuleId, ScanJob, ScanSummary, ThemeName, Track } from "../types";
-import { layoutPresets } from "../lib/layout";
+import { getBlock, layoutPresets } from "../lib/layout";
 
 interface TrackEditorDraft {
   title: string;
@@ -25,6 +25,9 @@ interface InspectorPanelProps {
   onDensityChange: (density: Density) => void;
   onPreset: (name: string) => void;
   onToggleModule: (id: ModuleId) => void;
+  onHideAll: () => void;
+  onShowAll: () => void;
+  onShowCore: () => void;
   onReset: () => void;
   onImport: () => void;
   onImportTracks: () => void;
@@ -72,6 +75,9 @@ export function InspectorPanel({
   onDensityChange,
   onPreset,
   onToggleModule,
+  onHideAll,
+  onShowAll,
+  onShowCore,
   onReset,
   onImport,
   onImportTracks,
@@ -81,6 +87,9 @@ export function InspectorPanel({
   onSaveTrackDetails,
   onTrackEditorChange,
 }: InspectorPanelProps) {
+  const visibleCount = layout.order.length - layout.hidden.length;
+  const hiddenCount = layout.hidden.length;
+
   return (
     <aside className="inspector" aria-label="Настройка дизайна">
       <div className="inspector-header">
@@ -231,23 +240,45 @@ export function InspectorPanel({
       </section>
 
       <section className="inspector-section">
-        <div className="section-label">Блоки</div>
-        <div className="toggle-list">
-          {layout.order.map((id) => (
-            <label className="toggle" key={id}>
-              <span>{moduleLabels[id]}</span>
-              <input
-                type="checkbox"
-                checked={!layout.hidden.includes(id)}
-                onChange={() => onToggleModule(id)}
-              />
-            </label>
-          ))}
+        <div className="section-head">
+          <div className="section-label">Блоки</div>
+          <span>{visibleCount} / {layout.order.length}</span>
         </div>
-      </section>
+        <div className="layout-action-grid">
+          <button className="secondary-btn" type="button" onClick={onShowAll} disabled={hiddenCount === 0}>
+            Показать всё
+          </button>
+          <button className="secondary-btn" type="button" onClick={onHideAll} disabled={visibleCount === 0}>
+            Скрыть всё
+          </button>
+          <button className="secondary-btn" type="button" onClick={onShowCore}>
+            Рабочий минимум
+          </button>
+          <button className="reset-btn" type="button" onClick={onReset}>
+            Сбросить
+          </button>
+        </div>
+        <div className="toggle-list">
+          {layout.order.map((id) => {
+            const block = getBlock(layout, id);
+            const hidden = layout.hidden.includes(id);
 
-      <section className="inspector-section">
-        <button className="reset-btn" type="button" onClick={onReset}>Сбросить раскладку</button>
+            return (
+              <label className={`toggle module-toggle-row ${hidden ? "is-hidden" : "is-visible"}`} key={id}>
+                <span>
+                  <strong>{moduleLabels[id]}</strong>
+                  <small>{block.cols}×{block.rows}</small>
+                </span>
+                <em>{hidden ? "скрыт" : "виден"}</em>
+                <input
+                  type="checkbox"
+                  checked={!hidden}
+                  onChange={() => onToggleModule(id)}
+                />
+              </label>
+            );
+          })}
+        </div>
       </section>
     </aside>
   );
