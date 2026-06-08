@@ -16,6 +16,8 @@ pub struct AppState {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_persisted_scope::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data_dir = app
@@ -33,18 +35,30 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::scan_library,
+            commands::start_scan,
+            commands::cancel_scan,
             commands::get_tracks,
             commands::get_albums,
             commands::get_artists,
             commands::get_playlists,
+            commands::get_library_folders,
+            commands::add_library_folder,
+            commands::remove_library_folder,
             commands::create_playlist,
+            commands::update_playlist,
             commands::delete_playlist,
             commands::add_tracks_to_playlist,
             commands::remove_track_from_playlist,
             commands::get_playlist_tracks,
+            commands::reorder_playlist_tracks,
             commands::get_track_artwork,
             commands::set_track_artwork,
             commands::update_track_details,
+            commands::mark_track_played,
+            commands::get_diagnostics,
+            commands::record_client_error,
+            commands::get_settings,
+            commands::save_settings,
             commands::save_layout,
             commands::load_layout
         ])

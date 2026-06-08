@@ -31,8 +31,13 @@ export interface Track {
   modifiedAt: number;
   missingTags: boolean;
   artworkId?: string | null;
+  artworkUri?: string | null;
   hasArtwork: boolean;
   lyrics?: string | null;
+  dateAdded: number;
+  playCount: number;
+  lastPlayedAt?: number | null;
+  isMissing: boolean;
 }
 
 export interface Artwork {
@@ -62,6 +67,18 @@ export interface Playlist {
   name: string;
   trackCount: number;
   createdAt: number;
+  description?: string | null;
+  artworkUri?: string | null;
+  updatedAt: number;
+  sortOrder: number;
+}
+
+export interface LibraryFolder {
+  id: number;
+  path: string;
+  addedAt: number;
+  lastScannedAt?: number | null;
+  ignoredPatterns?: string | null;
 }
 
 export interface LayoutBlock {
@@ -90,6 +107,43 @@ export interface ScanSummary {
   updated: number;
   skipped: number;
   errors: ScanError[];
+}
+
+export interface ScanOptions {
+  registerFolders?: boolean;
+}
+
+export interface ScanJob {
+  id: number;
+  state: string;
+  totalFiles?: number | null;
+  scannedFiles: number;
+  added: number;
+  updated: number;
+  skipped: number;
+  errors: ScanError[];
+  startedAt: number;
+  finishedAt?: number | null;
+}
+
+export interface EventLog {
+  id: number;
+  level: string;
+  message: string;
+  path?: string | null;
+  createdAt: number;
+}
+
+export interface AppDiagnostics {
+  appDataDir?: string | null;
+  logPath?: string | null;
+  recentEvents: EventLog[];
+}
+
+export interface AppSettings {
+  firstRunComplete: boolean;
+  reducedMotion: boolean;
+  activeLayout?: string | null;
 }
 
 export interface LibrarySnapshot {

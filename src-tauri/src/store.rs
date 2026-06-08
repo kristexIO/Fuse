@@ -1,14 +1,17 @@
 use crate::error::{FuseError, FuseResult};
 use crate::models::{
-    Album, Artist, Artwork, LayoutProfile, Playlist, ScanError, ScanSummary, Track, TrackDraft,
-    TrackQuery,
+    Album, AppDiagnostics, AppSettings, Artist, Artwork, EventLog, LayoutProfile, LibraryFolder,
+    Playlist, ScanError, ScanJob, ScanOptions, ScanSummary, Track, TrackDraft, TrackQuery,
 };
 use base64::{engine::general_purpose, Engine as _};
 use lofty::picture::PictureType;
 use lofty::prelude::*;
 use lofty::tag::{ItemKey, Tag};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashSet;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
@@ -16,20 +19,52 @@ use walkdir::WalkDir;
 const DEFAULT_TRACK_LIMIT: usize = 500;
 const MAX_TRACK_LIMIT: usize = 5_000;
 const MAX_ARTWORK_BYTES: usize = 15 * 1024 * 1024;
+const TRACK_SELECT: &str = r#"
+    id, path, title, artist, album, duration_ms, format, size_bytes,
+    modified_at, missing_tags, artwork_id, artwork_uri,
+    artwork_mime IS NOT NULL AND artwork_data IS NOT NULL AS has_artwork,
+    lyrics, date_added, play_count, last_played_at, is_missing
+"#;
+const TRACK_SELECT_T: &str = r#"
+    t.id, t.path, t.title, t.artist, t.album, t.duration_ms, t.format, t.size_bytes,
+    t.modified_at, t.missing_tags, t.artwork_id, t.artwork_uri,
+    t.artwork_mime IS NOT NULL AND t.artwork_data IS NOT NULL AS has_artwork,
+    t.lyrics, t.date_added, t.play_count, t.last_played_at, t.is_missing
+"#;
 
 pub struct LibraryStore {
     conn: Connection,
+    app_data_dir: Option<PathBuf>,
+    log_path: Option<PathBuf>,
 }
 
 impl LibraryStore {
     pub fn new(app_data_dir: PathBuf) -> FuseResult<Self> {
         fs::create_dir_all(&app_data_dir)?;
         let db_path = app_data_dir.join("fuse-library.sqlite3");
-        Self::from_connection(Connection::open(db_path)?)
+        let log_path = app_data_dir.join("fuse.log");
+        Self::from_connection_with_paths(
+            Connection::open(db_path)?,
+            Some(app_data_dir),
+            Some(log_path),
+        )
     }
 
+    #[cfg(test)]
     fn from_connection(conn: Connection) -> FuseResult<Self> {
-        let store = Self { conn };
+        Self::from_connection_with_paths(conn, None, None)
+    }
+
+    fn from_connection_with_paths(
+        conn: Connection,
+        app_data_dir: Option<PathBuf>,
+        log_path: Option<PathBuf>,
+    ) -> FuseResult<Self> {
+        let store = Self {
+            conn,
+            app_data_dir,
+            log_path,
+        };
         store.init_schema()?;
         Ok(store)
     }
@@ -52,9 +87,14 @@ impl LibraryStore {
                 modified_at INTEGER NOT NULL,
                 missing_tags INTEGER NOT NULL DEFAULT 0,
                 artwork_id TEXT,
+                artwork_uri TEXT,
                 artwork_mime TEXT,
                 artwork_data BLOB,
                 lyrics TEXT,
+                date_added INTEGER NOT NULL DEFAULT 0,
+                play_count INTEGER NOT NULL DEFAULT 0,
+                last_played_at INTEGER,
+                is_missing INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -66,7 +106,11 @@ impl LibraryStore {
             CREATE TABLE IF NOT EXISTS playlists (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                description TEXT,
+                artwork_uri TEXT,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS playlist_tracks (
@@ -81,18 +125,108 @@ impl LibraryStore {
                 data TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS library_folders (
+                id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                added_at INTEGER NOT NULL,
+                last_scanned_at INTEGER,
+                ignored_patterns TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS scan_jobs (
+                id INTEGER PRIMARY KEY,
+                state TEXT NOT NULL,
+                scanned_files INTEGER NOT NULL DEFAULT 0,
+                added INTEGER NOT NULL DEFAULT 0,
+                updated INTEGER NOT NULL DEFAULT 0,
+                skipped INTEGER NOT NULL DEFAULT 0,
+                errors_json TEXT NOT NULL DEFAULT '[]',
+                started_at INTEGER NOT NULL,
+                finished_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS event_logs (
+                id INTEGER PRIMARY KEY,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL,
+                path TEXT,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
             "#,
         )?;
 
+        ensure_column(&self.conn, "tracks", "artwork_uri", "TEXT")?;
         ensure_column(&self.conn, "tracks", "artwork_mime", "TEXT")?;
         ensure_column(&self.conn, "tracks", "artwork_data", "BLOB")?;
         ensure_column(&self.conn, "tracks", "lyrics", "TEXT")?;
+        ensure_column(
+            &self.conn,
+            "tracks",
+            "date_added",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &self.conn,
+            "tracks",
+            "play_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(&self.conn, "tracks", "last_played_at", "INTEGER")?;
+        ensure_column(
+            &self.conn,
+            "tracks",
+            "is_missing",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(&self.conn, "playlists", "description", "TEXT")?;
+        ensure_column(&self.conn, "playlists", "artwork_uri", "TEXT")?;
+        ensure_column(
+            &self.conn,
+            "playlists",
+            "updated_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &self.conn,
+            "playlists",
+            "sort_order",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+
+        self.conn.execute_batch(
+            r#"
+            UPDATE tracks SET date_added = created_at WHERE date_added = 0;
+            UPDATE playlists SET updated_at = created_at WHERE updated_at = 0;
+            UPDATE playlists SET sort_order = id WHERE sort_order = 0;
+            "#,
+        )?;
 
         Ok(())
     }
 
     pub fn scan_library(&mut self, paths: Vec<String>) -> FuseResult<ScanSummary> {
+        let job = self.start_scan(paths, None)?;
+        Ok(ScanSummary::from_job(&job))
+    }
+
+    pub fn start_scan(
+        &mut self,
+        paths: Vec<String>,
+        options: Option<ScanOptions>,
+    ) -> FuseResult<ScanJob> {
+        let started_at = now_epoch_seconds();
+        let options = options.unwrap_or_default();
+        let job_id = self.create_scan_job(started_at)?;
         let mut summary = ScanSummary::default();
+        let mut seen_paths = HashSet::new();
+        let mut folder_paths = Vec::new();
         let tx = self.conn.transaction()?;
 
         for root in paths {
@@ -103,6 +237,14 @@ impl LibraryStore {
                     message: "Folder does not exist".to_string(),
                 });
                 continue;
+            }
+
+            if root_path.is_dir() {
+                let canonical = canonical_string(&root_path);
+                folder_paths.push(canonical.clone());
+                if options.register_folders.unwrap_or(false) {
+                    upsert_library_folder(&tx, &canonical, started_at)?;
+                }
             }
 
             for entry in WalkDir::new(&root_path).follow_links(false) {
@@ -131,6 +273,7 @@ impl LibraryStore {
 
                 match read_track_draft(path) {
                     Ok(draft) => {
+                        seen_paths.insert(draft.path.clone());
                         let outcome = upsert_track(&tx, &draft)?;
                         match outcome {
                             UpsertOutcome::Added => summary.added += 1,
@@ -148,8 +291,51 @@ impl LibraryStore {
             }
         }
 
+        sync_missing_flags(&tx, &seen_paths)?;
+        for folder_path in folder_paths {
+            tx.execute(
+                "UPDATE library_folders SET last_scanned_at = ?2 WHERE path = ?1",
+                params![folder_path, started_at],
+            )?;
+        }
         tx.commit()?;
-        Ok(summary)
+
+        let state = if summary.errors.is_empty() {
+            "completed"
+        } else {
+            "completed_with_errors"
+        };
+        let job = ScanJob {
+            id: job_id,
+            state: state.to_string(),
+            total_files: None,
+            scanned_files: summary.scanned_files,
+            added: summary.added,
+            updated: summary.updated,
+            skipped: summary.skipped,
+            errors: summary.errors,
+            started_at,
+            finished_at: Some(now_epoch_seconds()),
+        };
+        self.finish_scan_job(&job)?;
+        if !job.errors.is_empty() {
+            for error in &job.errors {
+                self.record_event("warn", &error.message, Some(&error.path));
+            }
+        }
+        Ok(job)
+    }
+
+    pub fn cancel_scan(&self, job_id: i64) -> FuseResult<bool> {
+        let updated = self.conn.execute(
+            r#"
+            UPDATE scan_jobs
+            SET state = 'cancelled', finished_at = ?2
+            WHERE id = ?1 AND state = 'running'
+            "#,
+            params![job_id, now_epoch_seconds()],
+        )?;
+        Ok(updated > 0)
     }
 
     pub fn get_tracks(&self, query: Option<TrackQuery>) -> FuseResult<Vec<Track>> {
@@ -161,36 +347,112 @@ impl LibraryStore {
 
         if let Some(search) = clean_text(query.search.as_deref()) {
             let pattern = format!("%{}%", search);
-            let mut stmt = self.conn.prepare(
+            let sql = format!(
                 r#"
-                SELECT id, path, title, artist, album, duration_ms, format, size_bytes,
-                       modified_at, missing_tags, artwork_id,
-                       artwork_mime IS NOT NULL AND artwork_data IS NOT NULL AS has_artwork,
-                       lyrics
+                SELECT {TRACK_SELECT}
                 FROM tracks
                 WHERE title LIKE ?1 OR artist LIKE ?1 OR album LIKE ?1 OR path LIKE ?1
-                ORDER BY title COLLATE NOCASE ASC
+                ORDER BY is_missing ASC, title COLLATE NOCASE ASC
                 LIMIT ?2
                 "#,
-            )?;
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
 
             let rows = stmt.query_map(params![pattern, limit], track_from_row)?;
             return rows.collect::<Result<Vec<_>, _>>().map_err(FuseError::from);
         }
 
-        let mut stmt = self.conn.prepare(
+        let sql = format!(
             r#"
-            SELECT id, path, title, artist, album, duration_ms, format, size_bytes,
-                   modified_at, missing_tags, artwork_id,
-                   artwork_mime IS NOT NULL AND artwork_data IS NOT NULL AS has_artwork,
-                   lyrics
+            SELECT {TRACK_SELECT}
             FROM tracks
-            ORDER BY title COLLATE NOCASE ASC
+            ORDER BY is_missing ASC, title COLLATE NOCASE ASC
             LIMIT ?1
             "#,
-        )?;
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![limit], track_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(FuseError::from)
+    }
+
+    pub fn get_library_folders(&self) -> FuseResult<Vec<LibraryFolder>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, path, added_at, last_scanned_at, ignored_patterns
+            FROM library_folders
+            ORDER BY path COLLATE NOCASE ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], library_folder_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(FuseError::from)
+    }
+
+    pub fn add_library_folder(&self, path: String) -> FuseResult<LibraryFolder> {
+        let path = PathBuf::from(path);
+        if !path.exists() || !path.is_dir() {
+            return Err(FuseError::Validation(
+                "Library folder must be an existing directory".to_string(),
+            ));
+        }
+
+        let canonical = canonical_string(&path);
+        upsert_library_folder(&self.conn, &canonical, now_epoch_seconds())?;
+        self.get_library_folder_by_path(&canonical)
+    }
+
+    pub fn remove_library_folder(&self, folder_id: i64) -> FuseResult<()> {
+        self.conn.execute(
+            "DELETE FROM library_folders WHERE id = ?1",
+            params![folder_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_diagnostics(&self) -> FuseResult<AppDiagnostics> {
+        Ok(AppDiagnostics {
+            app_data_dir: self
+                .app_data_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            log_path: self
+                .log_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            recent_events: self.get_recent_events(50)?,
+        })
+    }
+
+    pub fn record_client_error(&self, message: String, source: Option<String>) -> FuseResult<()> {
+        let message = clean_text(Some(&message)).unwrap_or_else(|| "Client error".to_string());
+        self.record_event("error", &message, source.as_deref());
+        Ok(())
+    }
+
+    pub fn get_settings(&self) -> FuseResult<AppSettings> {
+        let data = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = 'app'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?;
+
+        match data {
+            Some(value) => serde_json::from_str(&value).map_err(FuseError::from),
+            None => Ok(AppSettings::default()),
+        }
+    }
+
+    pub fn save_settings(&self, settings: AppSettings) -> FuseResult<()> {
+        let data = serde_json::to_string(&settings)?;
+        self.conn.execute(
+            r#"
+            INSERT INTO settings (key, value, updated_at)
+            VALUES ('app', ?1, ?2)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            "#,
+            params![data, now_epoch_seconds()],
+        )?;
+        Ok(())
     }
 
     pub fn get_albums(&self) -> FuseResult<Vec<Album>> {
@@ -236,39 +498,36 @@ impl LibraryStore {
     pub fn get_playlists(&self) -> FuseResult<Vec<Playlist>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT p.id, p.name, COUNT(pt.track_id) AS track_count, p.created_at
+            SELECT p.id, p.name, COUNT(pt.track_id) AS track_count, p.created_at,
+                   p.description, p.artwork_uri, p.updated_at, p.sort_order
             FROM playlists p
             LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
             GROUP BY p.id
-            ORDER BY p.name COLLATE NOCASE ASC
+            ORDER BY p.sort_order ASC, p.name COLLATE NOCASE ASC
             "#,
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(Playlist {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                track_count: row.get(2)?,
-                created_at: row.get(3)?,
-            })
-        })?;
+        let rows = stmt.query_map([], playlist_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(FuseError::from)
     }
 
     pub fn create_playlist(&self, name: String) -> FuseResult<Playlist> {
         let name = clean_playlist_name(&name)?;
+        let now = now_epoch_seconds();
+        let sort_order = self.next_playlist_sort_order()?;
 
         self.conn.execute(
             r#"
-            INSERT OR IGNORE INTO playlists (name, created_at)
-            VALUES (?1, ?2)
+            INSERT OR IGNORE INTO playlists (name, created_at, updated_at, sort_order)
+            VALUES (?1, ?2, ?2, ?3)
             "#,
-            params![name, now_epoch_seconds()],
+            params![name, now, sort_order],
         )?;
 
         self.conn
             .query_row(
                 r#"
-                SELECT p.id, p.name, COUNT(pt.track_id) AS track_count, p.created_at
+                SELECT p.id, p.name, COUNT(pt.track_id) AS track_count, p.created_at,
+                       p.description, p.artwork_uri, p.updated_at, p.sort_order
                 FROM playlists p
                 LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
                 WHERE p.name = ?1
@@ -278,6 +537,31 @@ impl LibraryStore {
                 playlist_from_row,
             )
             .map_err(FuseError::from)
+    }
+
+    pub fn update_playlist(
+        &self,
+        playlist_id: i64,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> FuseResult<Playlist> {
+        let current = self.get_playlist_by_id(playlist_id)?;
+        let name = match name {
+            Some(value) => clean_playlist_name(&value)?,
+            None => current.name,
+        };
+        let description = clean_text(description.as_deref());
+
+        self.conn.execute(
+            r#"
+            UPDATE playlists
+            SET name = ?2, description = ?3, updated_at = ?4
+            WHERE id = ?1
+            "#,
+            params![playlist_id, name, description, now_epoch_seconds()],
+        )?;
+
+        self.get_playlist_by_id(playlist_id)
     }
 
     pub fn delete_playlist(&self, playlist_id: i64) -> FuseResult<()> {
@@ -313,6 +597,10 @@ impl LibraryStore {
             }
         }
 
+        self.conn.execute(
+            "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+            params![playlist_id, now_epoch_seconds()],
+        )?;
         self.get_playlist_by_id(playlist_id)
     }
 
@@ -321,23 +609,52 @@ impl LibraryStore {
             "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
             params![playlist_id, track_id],
         )?;
+        self.conn.execute(
+            "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+            params![playlist_id, now_epoch_seconds()],
+        )?;
         Ok(())
+    }
+
+    pub fn reorder_playlist_tracks(
+        &mut self,
+        playlist_id: i64,
+        track_ids: Vec<i64>,
+    ) -> FuseResult<Playlist> {
+        let _playlist = self.get_playlist_by_id(playlist_id)?;
+        let tx = self.conn.transaction()?;
+
+        for (index, track_id) in track_ids.into_iter().enumerate() {
+            tx.execute(
+                r#"
+                UPDATE playlist_tracks
+                SET position = ?3
+                WHERE playlist_id = ?1 AND track_id = ?2
+                "#,
+                params![playlist_id, track_id, index as i64],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+            params![playlist_id, now_epoch_seconds()],
+        )?;
+        tx.commit()?;
+        self.get_playlist_by_id(playlist_id)
     }
 
     pub fn get_playlist_tracks(&self, playlist_id: i64) -> FuseResult<Vec<Track>> {
         let _playlist = self.get_playlist_by_id(playlist_id)?;
-        let mut stmt = self.conn.prepare(
+        let sql = format!(
             r#"
-            SELECT t.id, t.path, t.title, t.artist, t.album, t.duration_ms, t.format,
-                   t.size_bytes, t.modified_at, t.missing_tags, t.artwork_id,
-                   t.artwork_mime IS NOT NULL AND t.artwork_data IS NOT NULL AS has_artwork,
-                   t.lyrics
+            SELECT {TRACK_SELECT_T}
             FROM playlist_tracks pt
             INNER JOIN tracks t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?1
             ORDER BY pt.position ASC, t.title COLLATE NOCASE ASC
             "#,
-        )?;
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![playlist_id], track_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(FuseError::from)
     }
@@ -346,7 +663,8 @@ impl LibraryStore {
         self.conn
             .query_row(
                 r#"
-                SELECT p.id, p.name, COUNT(pt.track_id) AS track_count, p.created_at
+                SELECT p.id, p.name, COUNT(pt.track_id) AS track_count, p.created_at,
+                       p.description, p.artwork_uri, p.updated_at, p.sort_order
                 FROM playlists p
                 LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
                 WHERE p.id = ?1
@@ -401,10 +719,17 @@ impl LibraryStore {
         self.conn.execute(
             r#"
             UPDATE tracks
-            SET artwork_id = ?2, artwork_mime = ?3, artwork_data = ?4, updated_at = ?5
+            SET artwork_id = ?2, artwork_uri = ?3, artwork_mime = ?4, artwork_data = ?5, updated_at = ?6
             WHERE id = ?1
             "#,
-            params![track_id, artwork_id, mime, data, now_epoch_seconds()],
+            params![
+                track_id,
+                artwork_id,
+                format!("fuse://artwork/track/{track_id}"),
+                mime,
+                data,
+                now_epoch_seconds()
+            ],
         )?;
 
         self.get_track_by_id(track_id)
@@ -448,20 +773,132 @@ impl LibraryStore {
     }
 
     pub fn get_track_by_id(&self, track_id: i64) -> FuseResult<Track> {
+        let sql = format!(
+            r#"
+                SELECT {TRACK_SELECT}
+                FROM tracks
+                WHERE id = ?1
+                "#
+        );
+        self.conn
+            .query_row(&sql, params![track_id], track_from_row)
+            .map_err(FuseError::from)
+    }
+
+    pub fn mark_track_played(&self, track_id: i64) -> FuseResult<Track> {
+        self.conn.execute(
+            r#"
+            UPDATE tracks
+            SET play_count = play_count + 1, last_played_at = ?2, updated_at = ?2
+            WHERE id = ?1
+            "#,
+            params![track_id, now_epoch_seconds()],
+        )?;
+        self.get_track_by_id(track_id)
+    }
+
+    fn get_library_folder_by_path(&self, path: &str) -> FuseResult<LibraryFolder> {
         self.conn
             .query_row(
                 r#"
-                SELECT id, path, title, artist, album, duration_ms, format, size_bytes,
-                       modified_at, missing_tags, artwork_id,
-                       artwork_mime IS NOT NULL AND artwork_data IS NOT NULL AS has_artwork,
-                       lyrics
-                FROM tracks
-                WHERE id = ?1
+                SELECT id, path, added_at, last_scanned_at, ignored_patterns
+                FROM library_folders
+                WHERE path = ?1
                 "#,
-                params![track_id],
-                track_from_row,
+                params![path],
+                library_folder_from_row,
             )
             .map_err(FuseError::from)
+    }
+
+    fn next_playlist_sort_order(&self) -> FuseResult<i64> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM playlists",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(FuseError::from)
+    }
+
+    fn create_scan_job(&self, started_at: i64) -> FuseResult<i64> {
+        self.conn.execute(
+            r#"
+            INSERT INTO scan_jobs (state, started_at)
+            VALUES ('running', ?1)
+            "#,
+            params![started_at],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    fn finish_scan_job(&self, job: &ScanJob) -> FuseResult<()> {
+        let errors_json = serde_json::to_string(&job.errors)?;
+        self.conn.execute(
+            r#"
+            UPDATE scan_jobs
+            SET state = ?2,
+                scanned_files = ?3,
+                added = ?4,
+                updated = ?5,
+                skipped = ?6,
+                errors_json = ?7,
+                finished_at = ?8
+            WHERE id = ?1
+            "#,
+            params![
+                job.id,
+                job.state,
+                job.scanned_files as i64,
+                job.added as i64,
+                job.updated as i64,
+                job.skipped as i64,
+                errors_json,
+                job.finished_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_recent_events(&self, limit: i64) -> FuseResult<Vec<EventLog>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, level, message, path, created_at
+            FROM event_logs
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = stmt.query_map(params![limit.clamp(1, 200)], |row| {
+            Ok(EventLog {
+                id: row.get(0)?,
+                level: row.get(1)?,
+                message: row.get(2)?,
+                path: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(FuseError::from)
+    }
+
+    fn record_event(&self, level: &str, message: &str, path: Option<&str>) {
+        let created_at = now_epoch_seconds();
+        let _ = self.conn.execute(
+            r#"
+            INSERT INTO event_logs (level, message, path, created_at)
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+            params![level, message, path, created_at],
+        );
+
+        if let Some(log_path) = &self.log_path {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+                let path_suffix = path
+                    .map(|value| format!(" path=\"{value}\""))
+                    .unwrap_or_default();
+                let _ = writeln!(file, "{created_at} [{level}] {message}{path_suffix}");
+            }
+        }
     }
 
     pub fn save_layout(&self, profile: LayoutProfile) -> FuseResult<()> {
@@ -539,10 +976,10 @@ fn upsert_track(conn: &Connection, draft: &TrackDraft) -> FuseResult<UpsertOutco
         r#"
         INSERT INTO tracks (
             path, title, artist, album, duration_ms, format, size_bytes,
-            modified_at, missing_tags, artwork_id, artwork_mime, artwork_data, lyrics,
-            created_at, updated_at
+            modified_at, missing_tags, artwork_id, artwork_uri, artwork_mime, artwork_data, lyrics,
+            date_added, created_at, updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?15)
         ON CONFLICT(path) DO UPDATE SET
             title = excluded.title,
             artist = excluded.artist,
@@ -553,9 +990,11 @@ fn upsert_track(conn: &Connection, draft: &TrackDraft) -> FuseResult<UpsertOutco
             modified_at = excluded.modified_at,
             missing_tags = excluded.missing_tags,
             artwork_id = COALESCE(excluded.artwork_id, tracks.artwork_id),
+            artwork_uri = COALESCE(excluded.artwork_uri, tracks.artwork_uri),
             artwork_mime = COALESCE(excluded.artwork_mime, tracks.artwork_mime),
             artwork_data = COALESCE(excluded.artwork_data, tracks.artwork_data),
             lyrics = COALESCE(excluded.lyrics, tracks.lyrics),
+            is_missing = 0,
             updated_at = excluded.updated_at
         "#,
         params![
@@ -569,6 +1008,10 @@ fn upsert_track(conn: &Connection, draft: &TrackDraft) -> FuseResult<UpsertOutco
             draft.modified_at,
             draft.missing_tags,
             draft.artwork_id,
+            draft
+                .artwork_id
+                .as_ref()
+                .map(|_| format!("fuse://artwork/path/{}", draft.path)),
             draft.artwork_mime,
             draft.artwork_data,
             draft.lyrics,
@@ -596,8 +1039,13 @@ fn track_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         modified_at: row.get(8)?,
         missing_tags: row.get::<_, i64>(9)? != 0,
         artwork_id: row.get(10)?,
-        has_artwork: row.get::<_, i64>(11)? != 0,
-        lyrics: row.get(12)?,
+        artwork_uri: row.get(11)?,
+        has_artwork: row.get::<_, i64>(12)? != 0,
+        lyrics: row.get(13)?,
+        date_added: row.get(14)?,
+        play_count: row.get(15)?,
+        last_played_at: row.get(16)?,
+        is_missing: row.get::<_, i64>(17)? != 0,
     })
 }
 
@@ -607,6 +1055,20 @@ fn playlist_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Playlist> {
         name: row.get(1)?,
         track_count: row.get(2)?,
         created_at: row.get(3)?,
+        description: row.get(4)?,
+        artwork_uri: row.get(5)?,
+        updated_at: row.get(6)?,
+        sort_order: row.get(7)?,
+    })
+}
+
+fn library_folder_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryFolder> {
+    Ok(LibraryFolder {
+        id: row.get(0)?,
+        path: row.get(1)?,
+        added_at: row.get(2)?,
+        last_scanned_at: row.get(3)?,
+        ignored_patterns: row.get(4)?,
     })
 }
 
@@ -632,6 +1094,51 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str)
         "ALTER TABLE {table} ADD COLUMN {column} {definition}"
     ))?;
     Ok(())
+}
+
+fn upsert_library_folder(conn: &Connection, path: &str, timestamp: i64) -> FuseResult<()> {
+    conn.execute(
+        r#"
+        INSERT INTO library_folders (path, added_at)
+        VALUES (?1, ?2)
+        ON CONFLICT(path) DO NOTHING
+        "#,
+        params![path, timestamp],
+    )?;
+    Ok(())
+}
+
+fn sync_missing_flags(conn: &Connection, seen_paths: &HashSet<String>) -> FuseResult<()> {
+    let mut stmt = conn.prepare("SELECT id, path, is_missing FROM tracks")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)? != 0,
+        ))
+    })?;
+    let tracks = rows.collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    for (id, path, was_missing) in tracks {
+        let exists = seen_paths.contains(&path) || Path::new(&path).exists();
+        let is_missing = !exists;
+        if is_missing != was_missing {
+            conn.execute(
+                "UPDATE tracks SET is_missing = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, is_missing, now_epoch_seconds()],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn canonical_string(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
 }
 
 fn read_lyrics(tag: &Tag) -> Option<String> {
@@ -933,6 +1440,53 @@ mod tests {
 
         assert_eq!(tracks.len(), 1);
         assert_eq!(tracks[0].id, second_track);
+    }
+
+    #[test]
+    fn playlist_tracks_can_be_reordered() {
+        let mut store = memory_store();
+        let first_track = insert_track(&store, "C:/music/a.flac");
+        let second_track = insert_track(&store, "C:/music/b.flac");
+        let playlist = store.create_playlist("Studio Queue".to_string()).unwrap();
+        store
+            .add_tracks_to_playlist(playlist.id, vec![first_track, second_track])
+            .unwrap();
+
+        store
+            .reorder_playlist_tracks(playlist.id, vec![second_track, first_track])
+            .unwrap();
+        let tracks = store.get_playlist_tracks(playlist.id).unwrap();
+
+        assert_eq!(
+            tracks.iter().map(|track| track.id).collect::<Vec<_>>(),
+            vec![second_track, first_track]
+        );
+    }
+
+    #[test]
+    fn library_folders_round_trip() {
+        let store = memory_store();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let folder = store
+            .add_library_folder(temp_dir.path().display().to_string())
+            .unwrap();
+
+        assert_eq!(store.get_library_folders().unwrap().len(), 1);
+
+        store.remove_library_folder(folder.id).unwrap();
+        assert!(store.get_library_folders().unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_files_are_marked_without_deleting_tracks() {
+        let store = memory_store();
+        let track_id = insert_track(&store, "C:/music/missing.flac");
+        let seen_paths = HashSet::new();
+
+        sync_missing_flags(&store.conn, &seen_paths).unwrap();
+        let track = store.get_track_by_id(track_id).unwrap();
+
+        assert!(track.is_missing);
     }
 
     #[test]

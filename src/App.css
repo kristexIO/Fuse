@@ -584,6 +584,19 @@ button {
   background: color-mix(in srgb, var(--accent) 12%, var(--panel-2));
 }
 
+.track-row.is-missing,
+.queue-item.is-missing,
+.playlist-track.is-missing {
+  opacity: 0.58;
+}
+
+.track-row.is-missing strong,
+.queue-item.is-missing strong,
+.playlist-track.is-missing strong {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
 .track-row strong,
 .track-row span {
   overflow: hidden;
@@ -1030,6 +1043,11 @@ button {
   background: color-mix(in srgb, var(--accent) 12%, var(--panel-2));
 }
 
+.queue-item:disabled,
+.track-action:disabled {
+  cursor: not-allowed;
+}
+
 .queue-art {
   width: 34px;
   height: 34px;
@@ -1214,6 +1232,23 @@ button {
 .status-line {
   color: var(--muted);
   font-size: 12px;
+}
+
+.folder-list {
+  display: grid;
+  gap: 6px;
+}
+
+.folder-list span {
+  min-width: 0;
+  overflow: hidden;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .inspector-section {

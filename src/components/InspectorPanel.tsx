@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import type { Density, LayoutProfile, ModuleId, ScanSummary, ThemeName, Track } from "../types";
+import type { Density, LayoutProfile, LibraryFolder, ModuleId, ScanJob, ScanSummary, ThemeName, Track } from "../types";
 import { layoutPresets } from "../lib/layout";
 
 interface TrackEditorDraft {
@@ -13,8 +13,11 @@ interface InspectorPanelProps {
   artworkUrl: string | null;
   currentTrack: Track | null;
   layout: LayoutProfile;
+  libraryFolders: LibraryFolder[];
   scanSummary: ScanSummary | null;
+  scanJob: ScanJob | null;
   backendStatus: string;
+  diagnosticsPath: string | null;
   scanning: boolean;
   playlistName: string;
   trackEditorDraft: TrackEditorDraft;
@@ -57,8 +60,11 @@ export function InspectorPanel({
   artworkUrl,
   currentTrack,
   layout,
+  libraryFolders,
   scanSummary,
+  scanJob,
   backendStatus,
+  diagnosticsPath,
   scanning,
   playlistName,
   trackEditorDraft,
@@ -112,6 +118,25 @@ export function InspectorPanel({
         {scanSummary && (
           <p className="status-line">
             {scanSummary.scannedFiles} scanned / {scanSummary.added} added / {scanSummary.updated} updated
+          </p>
+        )}
+        {scanJob && (
+          <p className="status-line">
+            scan #{scanJob.id} / {scanJob.state} / {scanJob.skipped} skipped
+          </p>
+        )}
+        {libraryFolders.length > 0 && (
+          <div className="folder-list">
+            {libraryFolders.slice(0, 4).map((folder) => (
+              <span key={folder.id} title={folder.path}>
+                {folder.path}
+              </span>
+            ))}
+          </div>
+        )}
+        {diagnosticsPath && (
+          <p className="status-line" title={diagnosticsPath}>
+            diagnostics: {compactPath(diagnosticsPath)}
           </p>
         )}
       </section>
@@ -226,4 +251,15 @@ export function InspectorPanel({
       </section>
     </aside>
   );
+}
+
+function compactPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+
+  if (parts.length <= 3) {
+    return path;
+  }
+
+  return `.../${parts.slice(-3).join("/")}`;
 }

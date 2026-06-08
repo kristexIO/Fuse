@@ -2,11 +2,16 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   Album,
+  AppDiagnostics,
+  AppSettings,
   Artwork,
   Artist,
   LayoutProfile,
+  LibraryFolder,
   LibrarySnapshot,
   Playlist,
+  ScanJob,
+  ScanOptions,
   ScanSummary,
   Track,
   TrackQuery,
@@ -25,7 +30,12 @@ let mockTracks: Track[] = [
     modifiedAt: 1780830000,
     missingTags: false,
     artworkId: null,
+    artworkUri: "mock://artwork/1",
     hasArtwork: true,
+    dateAdded: 1780800000,
+    playCount: 12,
+    lastPlayedAt: null,
+    isMissing: false,
     lyrics: `[00:00.00] (Инструментальное вступление)
 [00:05.00] Запусти сигнал в эфир
 [00:10.00] Дай ему раскрыться в белом шуме
@@ -59,7 +69,12 @@ let mockTracks: Track[] = [
     modifiedAt: 1780829000,
     missingTags: false,
     artworkId: null,
+    artworkUri: null,
     hasArtwork: false,
+    dateAdded: 1780800000,
+    playCount: 4,
+    lastPlayedAt: null,
+    isMissing: false,
     lyrics: null,
   },
   {
@@ -74,7 +89,12 @@ let mockTracks: Track[] = [
     modifiedAt: 1780828000,
     missingTags: true,
     artworkId: null,
+    artworkUri: null,
     hasArtwork: false,
+    dateAdded: 1780800000,
+    playCount: 0,
+    lastPlayedAt: null,
+    isMissing: false,
     lyrics: null,
   },
 ];
@@ -87,10 +107,12 @@ const mockArtworkDataUrls = new Map<number, string>([
 ]);
 
 let mockPlaylists: Playlist[] = [
-  { id: 1, name: "Late Focus", trackCount: 86, createdAt: 1780800000 },
-  { id: 2, name: "Road Cache", trackCount: 142, createdAt: 1780800000 },
-  { id: 3, name: "Lossless Picks", trackCount: 39, createdAt: 1780800000 },
+  { id: 1, name: "Late Focus", trackCount: 86, createdAt: 1780800000, description: null, artworkUri: null, updatedAt: 1780800000, sortOrder: 1 },
+  { id: 2, name: "Road Cache", trackCount: 142, createdAt: 1780800000, description: null, artworkUri: null, updatedAt: 1780800000, sortOrder: 2 },
+  { id: 3, name: "Lossless Picks", trackCount: 39, createdAt: 1780800000, description: null, artworkUri: null, updatedAt: 1780800000, sortOrder: 3 },
 ];
+
+let mockFolders: LibraryFolder[] = [];
 
 const mockPlaylistTrackIds = new Map<number, number[]>([
   [1, [1, 3]],
@@ -103,7 +125,7 @@ export function isTauriRuntime(): boolean {
 }
 
 export function audioSourceForTrack(track: Track): string | null {
-  if (!isTauriRuntime()) {
+  if (!isTauriRuntime() || track.isMissing) {
     return null;
   }
 
@@ -140,8 +162,22 @@ export async function getLibrarySnapshot(query?: TrackQuery): Promise<LibrarySna
 }
 
 export async function scanLibrary(paths: string[]): Promise<ScanSummary> {
+  const job = await startScan(paths);
+  return {
+    scannedFiles: job.scannedFiles,
+    added: job.added,
+    updated: job.updated,
+    skipped: job.skipped,
+    errors: job.errors,
+  };
+}
+
+export async function startScan(paths: string[], options?: ScanOptions): Promise<ScanJob> {
   if (!isTauriRuntime()) {
     return {
+      id: Date.now(),
+      state: "completed_with_errors",
+      totalFiles: null,
       scannedFiles: 0,
       added: 0,
       updated: 0,
@@ -152,10 +188,82 @@ export async function scanLibrary(paths: string[]): Promise<ScanSummary> {
           message: "Folder scanning is available in the Tauri desktop window.",
         },
       ],
+      startedAt: Math.floor(Date.now() / 1000),
+      finishedAt: Math.floor(Date.now() / 1000),
     };
   }
 
-  return invoke<ScanSummary>("scan_library", { paths });
+  return invoke<ScanJob>("start_scan", { paths, options: options ?? null });
+}
+
+export async function getLibraryFolders(): Promise<LibraryFolder[]> {
+  if (!isTauriRuntime()) {
+    return mockFolders;
+  }
+
+  return invoke<LibraryFolder[]>("get_library_folders");
+}
+
+export async function addLibraryFolder(path: string): Promise<LibraryFolder> {
+  if (!isTauriRuntime()) {
+    const existing = mockFolders.find((folder) => folder.path === path);
+    if (existing) {
+      return existing;
+    }
+
+    const folder: LibraryFolder = {
+      id: Math.max(0, ...mockFolders.map((item) => item.id)) + 1,
+      path,
+      addedAt: Math.floor(Date.now() / 1000),
+      lastScannedAt: null,
+      ignoredPatterns: null,
+    };
+    mockFolders = [...mockFolders, folder];
+    return folder;
+  }
+
+  return invoke<LibraryFolder>("add_library_folder", { path });
+}
+
+export async function removeLibraryFolder(folderId: number): Promise<void> {
+  if (!isTauriRuntime()) {
+    mockFolders = mockFolders.filter((folder) => folder.id !== folderId);
+    return;
+  }
+
+  await invoke("remove_library_folder", { folderId });
+}
+
+export async function getDiagnostics(): Promise<AppDiagnostics> {
+  if (!isTauriRuntime()) {
+    return { appDataDir: null, logPath: null, recentEvents: [] };
+  }
+
+  return invoke<AppDiagnostics>("get_diagnostics");
+}
+
+export async function recordClientError(message: string, source?: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  await invoke("record_client_error", { message, source: source ?? null });
+}
+
+export async function getSettings(): Promise<AppSettings> {
+  if (!isTauriRuntime()) {
+    return { firstRunComplete: false, reducedMotion: false, activeLayout: null };
+  }
+
+  return invoke<AppSettings>("get_settings");
+}
+
+export async function saveSettings(settings: AppSettings): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  await invoke("save_settings", { settings });
 }
 
 export async function pickMusicFolders(): Promise<string[]> {
@@ -235,6 +343,10 @@ export async function createPlaylist(name: string): Promise<Playlist> {
       name: cleanName,
       trackCount: 0,
       createdAt: Math.floor(Date.now() / 1000),
+      description: null,
+      artworkUri: null,
+      updatedAt: Math.floor(Date.now() / 1000),
+      sortOrder: Math.max(0, ...mockPlaylists.map((item) => item.sortOrder)) + 1,
     };
     mockPlaylists = [playlist, ...mockPlaylists];
     mockPlaylistTrackIds.set(playlist.id, []);
@@ -242,6 +354,31 @@ export async function createPlaylist(name: string): Promise<Playlist> {
   }
 
   return invoke<Playlist>("create_playlist", { name });
+}
+
+export async function updatePlaylist(
+  playlistId: number,
+  details: { name?: string | null; description?: string | null },
+): Promise<Playlist> {
+  if (!isTauriRuntime()) {
+    const playlist = mockPlaylists.find((item) => item.id === playlistId);
+    if (!playlist) {
+      throw new Error("Playlist not found");
+    }
+
+    if (details.name?.trim()) {
+      playlist.name = details.name.trim();
+    }
+    playlist.description = details.description?.trim() || null;
+    playlist.updatedAt = Math.floor(Date.now() / 1000);
+    return { ...playlist };
+  }
+
+  return invoke<Playlist>("update_playlist", {
+    playlistId,
+    name: details.name ?? null,
+    description: details.description ?? null,
+  });
 }
 
 export async function deletePlaylist(playlistId: number): Promise<void> {
@@ -294,6 +431,19 @@ export async function getPlaylistTracks(playlistId: number): Promise<Track[]> {
   }
 
   return invoke<Track[]>("get_playlist_tracks", { playlistId });
+}
+
+export async function reorderPlaylistTracks(playlistId: number, trackIds: number[]): Promise<Playlist> {
+  if (!isTauriRuntime()) {
+    mockPlaylistTrackIds.set(playlistId, trackIds);
+    const playlist = readMockPlaylists().find((item) => item.id === playlistId);
+    if (!playlist) {
+      throw new Error("Playlist not found");
+    }
+    return playlist;
+  }
+
+  return invoke<Playlist>("reorder_playlist_tracks", { playlistId, trackIds });
 }
 
 export async function getTrackArtwork(trackId: number): Promise<Artwork | null> {
@@ -354,6 +504,21 @@ export async function updateTrackDetails(
   });
 }
 
+export async function markTrackPlayed(trackId: number): Promise<Track | null> {
+  if (!isTauriRuntime()) {
+    const track = mockTracks.find((item) => item.id === trackId);
+    if (!track) {
+      return null;
+    }
+
+    track.playCount += 1;
+    track.lastPlayedAt = Math.floor(Date.now() / 1000);
+    return { ...track };
+  }
+
+  return invoke<Track>("mark_track_played", { trackId });
+}
+
 export async function loadLayoutProfile(name: string): Promise<LayoutProfile | null> {
   if (!isTauriRuntime()) {
     return null;
@@ -371,10 +536,12 @@ export async function saveLayoutProfile(profile: LayoutProfile): Promise<void> {
 }
 
 function readMockPlaylists(): Playlist[] {
-  return mockPlaylists.map((playlist) => ({
-    ...playlist,
-    trackCount: mockPlaylistTrackIds.get(playlist.id)?.length ?? playlist.trackCount,
-  }));
+  return mockPlaylists
+    .map((playlist) => ({
+      ...playlist,
+      trackCount: mockPlaylistTrackIds.get(playlist.id)?.length ?? playlist.trackCount,
+    }))
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
 }
 
 function toAlbums(tracks: Track[]): Album[] {

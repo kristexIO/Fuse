@@ -239,17 +239,17 @@ export function CollectionPanel({
           const alreadyAdded = activePlaylistTrackIds.has(track.id);
 
           return (
-            <div className={`track-row ${track.id === currentTrackId ? "is-current" : ""}`} key={track.id}>
-              <button className="track-action play" type="button" title="Играть сейчас" onClick={() => onPlayTrack(track)}>
+            <div className={`track-row ${track.id === currentTrackId ? "is-current" : ""} ${track.isMissing ? "is-missing" : ""}`} key={track.id}>
+              <button className="track-action play" type="button" disabled={track.isMissing} title={track.isMissing ? "File is missing on disk" : "Играть сейчас"} onClick={() => onPlayTrack(track)}>
                 ▶
               </button>
               <strong>{track.title}</strong>
-              <span>{track.artist || "Unknown Artist"}</span>
+              <span>{track.isMissing ? "Missing file" : track.artist || "Unknown Artist"}</span>
               <time>{formatDuration(track.durationMs)}</time>
               <button
                 className="track-action"
                 type="button"
-                disabled={!activePlaylist || alreadyAdded}
+                disabled={!activePlaylist || alreadyAdded || track.isMissing}
                 title={
                   alreadyAdded
                     ? "Трек уже в активном плейлисте"
@@ -353,15 +353,16 @@ export function QueuePanel({ artworkUrls, tracks, currentTrackId, onPlayTrack }:
     <div className="queue">
       {(queue.length ? queue : tracks.slice(0, 5)).map((track) => (
         <button
-          className={`queue-item ${track.id === currentTrackId ? "is-current" : ""}`}
+          className={`queue-item ${track.id === currentTrackId ? "is-current" : ""} ${track.isMissing ? "is-missing" : ""}`}
           key={track.id}
           type="button"
+          disabled={track.isMissing}
           onClick={() => onPlayTrack(track)}
         >
           <div className={`queue-art ${artworkUrls[track.id] ? "has-artwork" : ""}`} style={artworkStyle(artworkUrls[track.id])} />
           <div className="queue-text">
             <strong>{track.title}</strong>
-            <span>{track.artist || "Unknown Artist"}</span>
+            <span>{track.isMissing ? "Missing file" : track.artist || "Unknown Artist"}</span>
           </div>
           <time>{formatDuration(track.durationMs)}</time>
         </button>
@@ -435,11 +436,11 @@ export function PlaylistsPanel({
 
           <div className="playlist-track-list">
             {activePlaylistTracks.slice(0, 5).map((track) => (
-              <div className="playlist-track" key={track.id}>
+              <div className={`playlist-track ${track.isMissing ? "is-missing" : ""}`} key={track.id}>
                 <div className={`playlist-track-art ${artworkUrls[track.id] ? "has-artwork" : ""}`} style={artworkStyle(artworkUrls[track.id])} />
                 <div>
                   <strong>{track.title}</strong>
-                  <span>{track.artist || "Unknown Artist"}</span>
+                  <span>{track.isMissing ? "Missing file" : track.artist || "Unknown Artist"}</span>
                 </div>
                 <button
                   className="track-action"

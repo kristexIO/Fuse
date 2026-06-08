@@ -20,11 +20,22 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; media-src 'self' asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; font-src 'self'; object-src 'none'; base-uri 'self'",
       "assetProtocol": {
         "enable": true,
         "scope": {
-          "allow": ["**/*"]
+          "allow": [
+            "$APPDATA/**/*",
+            "$APPCACHE/**/*",
+            "$RESOURCE/**/*",
+            "$HOME/Music/**/*"
+          ],
+          "deny": [
+            "$HOME/.ssh/**/*",
+            "$HOME/.aws/**/*",
+            "$HOME/.gnupg/**/*",
+            "$HOME/AppData/Roaming/Microsoft/Credentials/**/*"
+          ]
         }
       }
     }

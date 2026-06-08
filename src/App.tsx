@@ -14,20 +14,25 @@ import {
 } from "./components/Panels";
 import {
   addTracksToPlaylist,
+  addLibraryFolder,
   audioSourceForTrack,
   createPlaylist,
   deletePlaylist,
+  getDiagnostics,
+  getLibraryFolders,
   getLibrarySnapshot,
   getPlaylistTracks,
   getTrackArtwork,
+  markTrackPlayed,
   isTauriRuntime,
   loadLayoutProfile,
   pickArtworkFile,
   pickMusicFiles,
   pickMusicFolders,
+  recordClientError,
   removeTrackFromPlaylist,
   saveLayoutProfile,
-  scanLibrary,
+  startScan,
   setTrackArtwork,
   updateTrackDetails,
 } from "./lib/api";
@@ -41,8 +46,10 @@ import {
 import type {
   Density,
   LayoutProfile,
+  LibraryFolder,
   LibrarySnapshot,
   ModuleId,
+  ScanJob,
   ScanSummary,
   ThemeName,
   Track,
@@ -94,6 +101,7 @@ function App() {
   const storedPlayback = useMemo(readStoredPlayback, []);
   const [layout, setLayout] = useState<LayoutProfile>(defaultLayout);
   const [library, setLibrary] = useState<LibrarySnapshot>(emptySnapshot);
+  const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>([]);
   const [activePlaylistId, setActivePlaylistId] = useState<number | null>(null);
   const [activePlaylistTracks, setActivePlaylistTracks] = useState<Track[]>([]);
   const [playlistName, setPlaylistName] = useState("");
@@ -116,8 +124,10 @@ function App() {
   const [showLyrics, setShowLyrics] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
+  const [scanJob, setScanJob] = useState<ScanJob | null>(null);
   const [search, setSearch] = useState("");
   const [backendStatus, setBackendStatus] = useState("Loading library...");
+  const [diagnosticsPath, setDiagnosticsPath] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [dragging, setDragging] = useState<ModuleId | null>(null);
   const [dropTarget, setDropTarget] = useState<ModuleId | null>(null);
@@ -129,6 +139,22 @@ function App() {
   useEffect(() => {
     layoutRef.current = layout;
   }, [layout]);
+
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      void recordClientError(event.message, event.filename || "window.error").catch(() => undefined);
+    };
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      void recordClientError(readError(event.reason), "unhandledrejection").catch(() => undefined);
+    };
+
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleRejection);
+    };
+  }, []);
 
   const refreshLibrary = useCallback(async (value = search) => {
     try {
@@ -146,6 +172,23 @@ function App() {
       setBackendStatus(readError(error));
     }
   }, [search]);
+
+  const refreshLibraryFolders = useCallback(async () => {
+    try {
+      setLibraryFolders(await getLibraryFolders());
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }, []);
+
+  const refreshDiagnostics = useCallback(async () => {
+    try {
+      const diagnostics = await getDiagnostics();
+      setDiagnosticsPath(diagnostics.logPath ?? diagnostics.appDataDir ?? null);
+    } catch {
+      setDiagnosticsPath(null);
+    }
+  }, []);
 
   useEffect(() => {
     const local = localStorage.getItem(layoutStorageKey);
@@ -165,7 +208,9 @@ function App() {
       });
 
     void refreshLibrary("");
-  }, [refreshLibrary]);
+    void refreshLibraryFolders();
+    void refreshDiagnostics();
+  }, [refreshDiagnostics, refreshLibrary, refreshLibraryFolders]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -324,6 +369,50 @@ function App() {
   }, [volume]);
 
   useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      const isTextInput =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement;
+
+      if (isTextInput) {
+        return;
+      }
+
+      if (event.code === "Space") {
+        event.preventDefault();
+        togglePlayback();
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        document.querySelector<HTMLInputElement>(".command input")?.focus();
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        void importTracks();
+      }
+
+      if (event.key === "ArrowRight") {
+        playNext();
+      }
+
+      if (event.key === "ArrowLeft") {
+        playPrevious();
+      }
+
+      if (event.key === "Delete" && currentTrack && activePlaylistTrackIds.has(currentTrack.id)) {
+        void removeFromActivePlaylist(currentTrack.id);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  });
+
+  useEffect(() => {
     const audio = audioRef.current;
     if (!audio) {
       return;
@@ -427,8 +516,12 @@ function App() {
         return;
       }
 
+      await Promise.all(paths.map((path) => addLibraryFolder(path).catch(() => null)));
+      await refreshLibraryFolders();
       setBackendStatus("Scanning local library...");
-      const summary = await scanLibrary(paths);
+      const job = await startScan(paths, { registerFolders: true });
+      const summary = scanSummaryFromJob(job);
+      setScanJob(job);
       setScanSummary(summary);
       await refreshLibrary(search);
       setBackendStatus(`Scan complete: ${summary.added} added, ${summary.updated} updated`);
@@ -451,7 +544,9 @@ function App() {
       }
 
       setBackendStatus("Adding selected tracks...");
-      const summary = await scanLibrary(paths);
+      const job = await startScan(paths);
+      const summary = scanSummaryFromJob(job);
+      setScanJob(job);
       setScanSummary(summary);
       await refreshLibrary(search);
       setBackendStatus(`Tracks added: ${summary.added} new, ${summary.updated} updated`);
@@ -574,10 +669,23 @@ function App() {
   }
 
   function playTrack(track: Track, queue = playbackSource) {
+    if (track.isMissing) {
+      setPlaybackError("This track is missing on disk. Rescan the library or restore the file.");
+      setBackendStatus(`Missing file: ${track.title}`);
+      return;
+    }
+
     const nextQueue = queue.length ? queue : [track];
     setPlaybackQueue(nextQueue);
     setCurrentTrackId(track.id);
     setPendingPlayback(true);
+    void markTrackPlayed(track.id)
+      .then((updated) => {
+        if (updated) {
+          replaceTrack(updated);
+        }
+      })
+      .catch(() => undefined);
   }
 
   function playPlaylist() {
@@ -980,8 +1088,11 @@ function App() {
           artworkUrl={currentArtworkUrl}
           currentTrack={currentTrack}
           layout={layout}
+          libraryFolders={libraryFolders}
           scanSummary={scanSummary}
+          scanJob={scanJob}
           backendStatus={backendStatus}
+          diagnosticsPath={diagnosticsPath}
           scanning={scanning}
           playlistName={playlistName}
           trackEditorDraft={trackEditorDraft}
@@ -1075,6 +1186,16 @@ function readStoredPlayback(): StoredPlayback {
   } catch {
     return fallback;
   }
+}
+
+function scanSummaryFromJob(job: ScanJob): ScanSummary {
+  return {
+    scannedFiles: job.scannedFiles,
+    added: job.added,
+    updated: job.updated,
+    skipped: job.skipped,
+    errors: job.errors,
+  };
 }
 
 function readError(error: unknown): string {

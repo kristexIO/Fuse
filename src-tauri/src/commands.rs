@@ -1,6 +1,7 @@
 use crate::error::{CommandError, CommandResult, FuseError};
 use crate::models::{
-    Album, Artist, Artwork, LayoutProfile, Playlist, ScanSummary, Track, TrackQuery,
+    Album, AppDiagnostics, AppSettings, Artist, Artwork, LayoutProfile, LibraryFolder, Playlist,
+    ScanJob, ScanOptions, ScanSummary, Track, TrackQuery,
 };
 use crate::AppState;
 use tauri::State;
@@ -12,6 +13,28 @@ pub fn scan_library(state: State<'_, AppState>, paths: Vec<String>) -> CommandRe
         .lock()
         .map_err(|_| CommandError::from(FuseError::Lock))?;
     store.scan_library(paths).map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn start_scan(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    options: Option<ScanOptions>,
+) -> CommandResult<ScanJob> {
+    let mut store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.start_scan(paths, options).map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn cancel_scan(state: State<'_, AppState>, job_id: i64) -> CommandResult<bool> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.cancel_scan(job_id).map_err(CommandError::from)
 }
 
 #[tauri::command]
@@ -54,12 +77,60 @@ pub fn get_playlists(state: State<'_, AppState>) -> CommandResult<Vec<Playlist>>
 }
 
 #[tauri::command]
+pub fn get_library_folders(state: State<'_, AppState>) -> CommandResult<Vec<LibraryFolder>> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.get_library_folders().map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn add_library_folder(
+    state: State<'_, AppState>,
+    path: String,
+) -> CommandResult<LibraryFolder> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.add_library_folder(path).map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn remove_library_folder(state: State<'_, AppState>, folder_id: i64) -> CommandResult<()> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store
+        .remove_library_folder(folder_id)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
 pub fn create_playlist(state: State<'_, AppState>, name: String) -> CommandResult<Playlist> {
     let store = state
         .store
         .lock()
         .map_err(|_| CommandError::from(FuseError::Lock))?;
     store.create_playlist(name).map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn update_playlist(
+    state: State<'_, AppState>,
+    playlist_id: i64,
+    name: Option<String>,
+    description: Option<String>,
+) -> CommandResult<Playlist> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store
+        .update_playlist(playlist_id, name, description)
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
@@ -118,6 +189,21 @@ pub fn get_playlist_tracks(
 }
 
 #[tauri::command]
+pub fn reorder_playlist_tracks(
+    state: State<'_, AppState>,
+    playlist_id: i64,
+    track_ids: Vec<i64>,
+) -> CommandResult<Playlist> {
+    let mut store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store
+        .reorder_playlist_tracks(playlist_id, track_ids)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
 pub fn get_track_artwork(
     state: State<'_, AppState>,
     track_id: i64,
@@ -162,6 +248,59 @@ pub fn update_track_details(
     store
         .update_track_details(track_id, title, artist, album, lyrics)
         .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn mark_track_played(state: State<'_, AppState>, track_id: i64) -> CommandResult<Track> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store
+        .mark_track_played(track_id)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_diagnostics(state: State<'_, AppState>) -> CommandResult<AppDiagnostics> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.get_diagnostics().map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn record_client_error(
+    state: State<'_, AppState>,
+    message: String,
+    source: Option<String>,
+) -> CommandResult<()> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store
+        .record_client_error(message, source)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, AppState>) -> CommandResult<AppSettings> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.get_settings().map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> CommandResult<()> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.save_settings(settings).map_err(CommandError::from)
 }
 
 #[tauri::command]

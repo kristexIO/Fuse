@@ -1,5 +1,10 @@
 # Fuse
 
+[![Windows Build](https://github.com/kristexIO/Fuse/actions/workflows/windows-build.yml/badge.svg)](https://github.com/kristexIO/Fuse/actions/workflows/windows-build.yml)
+[![Release](https://github.com/kristexIO/Fuse/actions/workflows/release.yml/badge.svg)](https://github.com/kristexIO/Fuse/actions/workflows/release.yml)
+
+![Fuse Clean Studio preview](docs/fuse-preview.svg)
+
 Fuse is an offline-first desktop music app for Windows. It is built for people who want a local Spotify-like library without accounts, cloud sync, telemetry, or network dependency.
 
 The current product direction is **Clean Studio**: a modular workspace, soft motion, draggable/resizable panels, strong cover-focused visuals, and a local Rust backend that owns the music library.
@@ -15,6 +20,7 @@ The current product direction is **Clean Studio**: a modular workspace, soft mot
 - Search tracks and browse artists, albums, playlists, missing-tag files, and library stats.
 - Customize the workspace: themes, density, panel order, visibility, presets, drag/drop, and resize.
 - Persist library, playlists, artwork, lyrics, and layout profiles in local SQLite.
+- Keep managed library folders, scan history, diagnostics, and app settings local to the device.
 
 ## Stack
 
@@ -74,6 +80,8 @@ Build artifacts are written to:
 
 - `src-tauri/target/release/bundle/nsis/`
 - `src-tauri/target/release/bundle/msi/`
+
+Preview releases are built by GitHub Actions from version tags such as `v0.1.0`.
 
 ## Current Status
 

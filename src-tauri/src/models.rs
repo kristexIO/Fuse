@@ -14,8 +14,13 @@ pub struct Track {
     pub modified_at: i64,
     pub missing_tags: bool,
     pub artwork_id: Option<String>,
+    pub artwork_uri: Option<String>,
     pub has_artwork: bool,
     pub lyrics: Option<String>,
+    pub date_added: i64,
+    pub play_count: i64,
+    pub last_played_at: Option<i64>,
+    pub is_missing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +60,67 @@ pub struct Playlist {
     pub name: String,
     pub track_count: i64,
     pub created_at: i64,
+    pub description: Option<String>,
+    pub artwork_uri: Option<String>,
+    pub updated_at: i64,
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryFolder {
+    pub id: i64,
+    pub path: String,
+    pub added_at: i64,
+    pub last_scanned_at: Option<i64>,
+    pub ignored_patterns: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanOptions {
+    pub register_folders: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanJob {
+    pub id: i64,
+    pub state: String,
+    pub total_files: Option<usize>,
+    pub scanned_files: usize,
+    pub added: usize,
+    pub updated: usize,
+    pub skipped: usize,
+    pub errors: Vec<ScanError>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventLog {
+    pub id: i64,
+    pub level: String,
+    pub message: String,
+    pub path: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppDiagnostics {
+    pub app_data_dir: Option<String>,
+    pub log_path: Option<String>,
+    pub recent_events: Vec<EventLog>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub first_run_complete: bool,
+    pub reduced_motion: bool,
+    pub active_layout: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -91,6 +157,18 @@ pub struct ScanSummary {
     pub updated: usize,
     pub skipped: usize,
     pub errors: Vec<ScanError>,
+}
+
+impl ScanSummary {
+    pub fn from_job(job: &ScanJob) -> Self {
+        Self {
+            scanned_files: job.scanned_files,
+            added: job.added,
+            updated: job.updated,
+            skipped: job.skipped,
+            errors: job.errors.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
