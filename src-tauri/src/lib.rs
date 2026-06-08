@@ -1,8 +1,10 @@
 mod commands;
 mod error;
 mod models;
+mod playback;
 mod store;
 
+use crate::playback::PlaybackEngine;
 use crate::store::LibraryStore;
 use std::error::Error;
 use std::sync::Mutex;
@@ -10,6 +12,7 @@ use tauri::Manager;
 
 pub struct AppState {
     pub store: Mutex<LibraryStore>,
+    pub playback: Mutex<PlaybackEngine>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -29,6 +32,7 @@ pub fn run() {
 
             app.manage(AppState {
                 store: Mutex::new(store),
+                playback: Mutex::new(PlaybackEngine::new()),
             });
 
             Ok(())
@@ -55,6 +59,15 @@ pub fn run() {
             commands::set_track_artwork,
             commands::update_track_details,
             commands::mark_track_played,
+            commands::play_track,
+            commands::pause_playback,
+            commands::resume_playback,
+            commands::stop_playback,
+            commands::seek_playback,
+            commands::set_volume,
+            commands::set_queue,
+            commands::play_queue_index,
+            commands::get_playback_state,
             commands::get_diagnostics,
             commands::record_client_error,
             commands::get_settings,

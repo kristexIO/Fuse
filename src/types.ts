@@ -146,6 +146,18 @@ export interface AppSettings {
   activeLayout?: string | null;
 }
 
+export interface PlaybackState {
+  engine: string;
+  status: string;
+  trackId?: number | null;
+  positionMs: number;
+  durationMs?: number | null;
+  volume: number;
+  queue: number[];
+  queueIndex?: number | null;
+  error?: string | null;
+}
+
 export interface LibrarySnapshot {
   tracks: Track[];
   albums: Album[];

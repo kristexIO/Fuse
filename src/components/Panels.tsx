@@ -33,6 +33,7 @@ interface PlayerPanelProps {
   durationMs: number;
   isPlaying: boolean;
   playbackError: string | null;
+  playbackBackend: string;
   repeat: boolean;
   shuffle: boolean;
   volume: number;
@@ -277,6 +278,7 @@ export function PlayerPanel({
   durationMs,
   isPlaying,
   playbackError,
+  playbackBackend,
   repeat,
   shuffle,
   volume,
@@ -326,7 +328,7 @@ export function PlayerPanel({
         {playbackError && <div className="player-error">{playbackError}</div>}
       </div>
       <div className="device-panel">
-        <span>WebView audio output</span>
+        <span>{playbackBackend === "rust" ? "Rust audio engine" : "WebView audio fallback"}</span>
         <input
           className="range-line"
           type="range"

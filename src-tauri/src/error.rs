@@ -10,6 +10,8 @@ pub enum FuseError {
     Json(#[from] serde_json::Error),
     #[error("metadata error: {0}")]
     Metadata(String),
+    #[error("playback error: {0}")]
+    Playback(String),
     #[error("validation error: {0}")]
     Validation(String),
     #[error("app path error: {0}")]

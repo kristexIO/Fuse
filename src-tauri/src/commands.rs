@@ -1,7 +1,8 @@
 use crate::error::{CommandError, CommandResult, FuseError};
 use crate::models::{
-    Album, AppDiagnostics, AppSettings, Artist, Artwork, LayoutProfile, LibraryFolder, Playlist,
-    ScanJob, ScanOptions, ScanSummary, Track, TrackQuery,
+    Album, AppDiagnostics, AppSettings, Artist, Artwork, LayoutProfile, LibraryFolder,
+    PlaybackQueueItem, PlaybackState, Playlist, ScanJob, ScanOptions, ScanSummary, Track,
+    TrackQuery,
 };
 use crate::AppState;
 use tauri::State;
@@ -262,6 +263,115 @@ pub fn mark_track_played(state: State<'_, AppState>, track_id: i64) -> CommandRe
 }
 
 #[tauri::command]
+pub fn play_track(state: State<'_, AppState>, track_id: i64) -> CommandResult<PlaybackState> {
+    let track = {
+        let store = state
+            .store
+            .lock()
+            .map_err(|_| CommandError::from(FuseError::Lock))?;
+        store
+            .get_track_by_id(track_id)
+            .map_err(CommandError::from)?
+    };
+
+    let mut playback = state
+        .playback
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    playback
+        .play_track(playback_item_from_track(track))
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn pause_playback(state: State<'_, AppState>) -> CommandResult<PlaybackState> {
+    let mut playback = state
+        .playback
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    Ok(playback.pause())
+}
+
+#[tauri::command]
+pub fn resume_playback(state: State<'_, AppState>) -> CommandResult<PlaybackState> {
+    let mut playback = state
+        .playback
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    playback.resume().map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn stop_playback(state: State<'_, AppState>) -> CommandResult<PlaybackState> {
+    let mut playback = state
+        .playback
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    Ok(playback.stop())
+}
+
+#[tauri::command]
+pub fn seek_playback(state: State<'_, AppState>, position_ms: i64) -> CommandResult<PlaybackState> {
+    let mut playback = state
+        .playback
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    playback.seek(position_ms).map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn set_volume(state: State<'_, AppState>, volume: f32) -> CommandResult<PlaybackState> {
+    let mut playback = state
+        .playback
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    Ok(playback.set_volume(volume))
+}
+
+#[tauri::command]
+pub fn set_queue(
+    state: State<'_, AppState>,
+    track_ids: Vec<i64>,
+    start_index: Option<usize>,
+) -> CommandResult<PlaybackState> {
+    let tracks = {
+        let store = state
+            .store
+            .lock()
+            .map_err(|_| CommandError::from(FuseError::Lock))?;
+        store
+            .get_tracks_by_ids(&track_ids)
+            .map_err(CommandError::from)?
+    };
+    let queue = tracks.into_iter().map(playback_item_from_track).collect();
+    let mut playback = state
+        .playback
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    playback
+        .set_queue(queue, start_index)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn play_queue_index(state: State<'_, AppState>, index: usize) -> CommandResult<PlaybackState> {
+    let mut playback = state
+        .playback
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    playback.play_queue_index(index).map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_playback_state(state: State<'_, AppState>) -> CommandResult<PlaybackState> {
+    let playback = state
+        .playback
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    Ok(playback.state())
+}
+
+#[tauri::command]
 pub fn get_diagnostics(state: State<'_, AppState>) -> CommandResult<AppDiagnostics> {
     let store = state
         .store
@@ -322,4 +432,14 @@ pub fn load_layout(
         .lock()
         .map_err(|_| CommandError::from(FuseError::Lock))?;
     store.load_layout(name).map_err(CommandError::from)
+}
+
+fn playback_item_from_track(track: Track) -> PlaybackQueueItem {
+    PlaybackQueueItem {
+        track_id: track.id,
+        path: track.path,
+        title: track.title,
+        artist: track.artist,
+        duration_ms: track.duration_ms,
+    }
 }

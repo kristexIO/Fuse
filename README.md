@@ -13,7 +13,7 @@ The current product direction is **Clean Studio**: a modular workspace, soft mot
 
 - Import individual MP3 files or whole music folders.
 - Scan local metadata with `lofty`: title, artist, album, duration, format, file size, modified time, embedded lyrics, and embedded cover art.
-- Play imported local tracks through the Tauri WebView audio layer.
+- Play imported local tracks through the Rust audio engine with WebView fallback.
 - Build local playlists, add/remove tracks, and launch an active playlist.
 - Edit track details locally: title, artist, album, lyrics.
 - Add or replace local cover art without modifying the source audio file.
@@ -85,13 +85,13 @@ Preview releases are built by GitHub Actions from version tags such as `v0.1.0`.
 
 ## Current Status
 
-Fuse is a strong local-library MVP. It already supports import, metadata indexing, playlists, editable lyrics/details, cover art, workspace customization, and local playback.
+Fuse is a strong local-library preview. It already supports import, metadata indexing, playlists, editable lyrics/details, cover art, workspace customization, Rust-backed playback, and WebView playback fallback.
 
-The playback layer currently uses WebView audio for practical MVP coverage. A deeper Rust/WASAPI playback engine is planned for lower-level output control.
+The playback layer now starts with a Rust `rodio` engine over system audio output and falls back to WebView audio when the output device or decoder is unavailable.
 
 ## Roadmap
 
-- Rust/WASAPI playback engine.
+- Dedicated Rust/WASAPI output controls and device selection.
 - Queue persistence.
 - File watcher for automatic library updates.
 - Cover-art extraction cache on disk for very large libraries.

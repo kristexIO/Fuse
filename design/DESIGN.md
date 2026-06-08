@@ -6,7 +6,7 @@ Fuse is an offline-first Windows music app with a modular workspace. The user sh
 
 - Desktop target: Windows first.
 - App stack: Tauri 2, Rust backend, React + TypeScript frontend.
-- Current milestone: local library, playlists, editable track data, cover art, lyrics, and WebView playback.
+- Current milestone: local library, playlists, editable track data, cover art, lyrics, Rust playback preview, and WebView playback fallback.
 - Visual direction: Clean Studio. Keep the strong gradient identity, but reduce noisy borders, excessive shadows, and decorative clutter.
 
 ## Core Panels
@@ -14,7 +14,7 @@ Fuse is an offline-first Windows music app with a modular workspace. The user sh
 - `Library`: local folders, artists, albums, missing-tag files.
 - `Now Playing`: current track metadata, animated cover, waveform.
 - `Collection`: searchable track table with play-now and quick add-to-playlist actions.
-- `Player`: playback transport, seek, progress, volume, shuffle, repeat.
+- `Player`: playback transport, seek, progress, volume, shuffle, repeat, and playback backend status.
 - `Queue`: current and upcoming tracks with direct play actions.
 - `Mixer`: EQ and local audio controls placeholder.
 - `Playlists`: local playlists, active playlist selection, playlist track removal.
@@ -51,15 +51,15 @@ The Rust backend owns local library data:
 - Embedded cover-art and lyrics extraction where the audio tags expose them.
 - Manual local cover-art and lyrics editing in SQLite without mutating source audio files.
 - Local playlist creation, deletion, and duplicate-safe track membership.
-- Playback MVP uses the Tauri WebView audio element and local file URLs from `convertFileSrc`.
+- Playback preview uses a Rust `rodio` engine over system audio output, with the Tauri WebView audio element and local file URLs from `convertFileSrc` as fallback.
 - Supported formats include MP3, FLAC, WAV, M4A/MP4, OGG, OPUS, AIFF, APE, MPC, Speex, WavPack.
 - No cloud, login, telemetry, or sync.
 
 ## Next Backend Milestone
 
-After the WebView playback MVP is stable:
+After the Rust playback preview is stable:
 
-- Rust/WASAPI playback engine
+- device selection and lower-level WASAPI controls
 - queue persistence
 - cover-art cache on disk for very large libraries
 - optional write-back to audio file tags

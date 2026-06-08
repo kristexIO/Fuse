@@ -10,6 +10,7 @@ import type {
   LibraryFolder,
   LibrarySnapshot,
   Playlist,
+  PlaybackState,
   ScanJob,
   ScanOptions,
   ScanSummary,
@@ -517,6 +518,70 @@ export async function markTrackPlayed(trackId: number): Promise<Track | null> {
   }
 
   return invoke<Track>("mark_track_played", { trackId });
+}
+
+export async function setRustPlaybackQueue(trackIds: number[], startIndex?: number): Promise<PlaybackState | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<PlaybackState>("set_queue", { trackIds, startIndex: startIndex ?? null });
+}
+
+export async function playRustQueueIndex(index: number): Promise<PlaybackState | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<PlaybackState>("play_queue_index", { index });
+}
+
+export async function playRustTrack(trackId: number): Promise<PlaybackState | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<PlaybackState>("play_track", { trackId });
+}
+
+export async function pauseRustPlayback(): Promise<PlaybackState | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<PlaybackState>("pause_playback");
+}
+
+export async function resumeRustPlayback(): Promise<PlaybackState | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<PlaybackState>("resume_playback");
+}
+
+export async function seekRustPlayback(positionMs: number): Promise<PlaybackState | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<PlaybackState>("seek_playback", { positionMs: Math.round(positionMs) });
+}
+
+export async function setRustPlaybackVolume(volume: number): Promise<PlaybackState | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<PlaybackState>("set_volume", { volume });
+}
+
+export async function getRustPlaybackState(): Promise<PlaybackState | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<PlaybackState>("get_playback_state");
 }
 
 export async function loadLayoutProfile(name: string): Promise<LayoutProfile | null> {

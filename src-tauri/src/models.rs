@@ -123,6 +123,30 @@ pub struct AppSettings {
     pub active_layout: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackQueueItem {
+    pub track_id: i64,
+    pub path: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackState {
+    pub engine: String,
+    pub status: String,
+    pub track_id: Option<i64>,
+    pub position_ms: i64,
+    pub duration_ms: Option<i64>,
+    pub volume: f32,
+    pub queue: Vec<i64>,
+    pub queue_index: Option<usize>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LayoutBlock {

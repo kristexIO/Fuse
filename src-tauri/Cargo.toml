@@ -30,6 +30,7 @@ lofty = "0.24.0"
 thiserror = "2"
 walkdir = "2"
 base64 = "0.22"
+rodio = "0.22.2"
 
 [dev-dependencies]
 tempfile = "3"

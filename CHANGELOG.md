@@ -2,6 +2,18 @@
 
 All notable Fuse changes are documented here.
 
+## Unreleased
+
+### Added
+
+- Rust playback preview powered by `rodio`, with queue, play, pause, resume, seek, volume, and state commands.
+- Frontend playback backend selection with WebView audio fallback.
+
+### Changed
+
+- Player output label now reflects Rust audio vs WebView fallback.
+- GitHub Actions workflows opt into Node 24 action runtime.
+
 ## [0.1.0] - 2026-06-08
 
 ### Added

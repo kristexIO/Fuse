@@ -22,16 +22,23 @@ import {
   getLibraryFolders,
   getLibrarySnapshot,
   getPlaylistTracks,
+  getRustPlaybackState,
   getTrackArtwork,
   markTrackPlayed,
   isTauriRuntime,
   loadLayoutProfile,
+  pauseRustPlayback,
   pickArtworkFile,
   pickMusicFiles,
   pickMusicFolders,
+  playRustQueueIndex,
   recordClientError,
   removeTrackFromPlaylist,
+  resumeRustPlayback,
   saveLayoutProfile,
+  seekRustPlayback,
+  setRustPlaybackQueue,
+  setRustPlaybackVolume,
   startScan,
   setTrackArtwork,
   updateTrackDetails,
@@ -57,6 +64,7 @@ import type {
 
 const layoutStorageKey = "fuse.layout.v2";
 const playbackStorageKey = "fuse.playback.v1";
+type PlaybackBackend = "rust" | "webview";
 
 interface StoredPlayback {
   trackId: number | null;
@@ -121,6 +129,7 @@ function App() {
   const [shuffle, setShuffle] = useState(storedPlayback.shuffle);
   const [repeat, setRepeat] = useState(storedPlayback.repeat);
   const [pendingPlayback, setPendingPlayback] = useState(false);
+  const [playbackBackend, setPlaybackBackend] = useState<PlaybackBackend>(isTauriRuntime() ? "rust" : "webview");
   const [showLyrics, setShowLyrics] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
@@ -366,7 +375,44 @@ function App() {
     if (audioRef.current) {
       audioRef.current.volume = volume;
     }
-  }, [volume]);
+
+    if (playbackBackend === "rust") {
+      void setRustPlaybackVolume(volume).catch(() => undefined);
+    }
+  }, [playbackBackend, volume]);
+
+  useEffect(() => {
+    if (playbackBackend !== "rust" || !isPlaying) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void getRustPlaybackState()
+        .then((state) => {
+          if (!state) {
+            return;
+          }
+
+          setCurrentTimeMs(state.positionMs);
+          setDurationMs(state.durationMs ?? currentTrack?.durationMs ?? 0);
+          if (state.status === "stopped" && isPlaying) {
+            setIsPlaying(false);
+            handleTrackEnded();
+            return;
+          }
+
+          setIsPlaying(state.status === "playing");
+          if (state.error) {
+            setPlaybackError(state.error);
+          }
+        })
+        .catch((error) => {
+          setPlaybackError(readError(error));
+        });
+    }, 500);
+
+    return () => window.clearInterval(interval);
+  }, [currentTrack?.durationMs, isPlaying, playbackBackend]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -418,6 +464,13 @@ function App() {
       return;
     }
 
+    if (playbackBackend === "rust") {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      return;
+    }
+
     setPlaybackError(null);
 
     if (!currentTrack) {
@@ -466,7 +519,7 @@ function App() {
           setPlaybackError(readError(error));
         });
     }
-  }, [currentTrack, pendingPlayback]);
+  }, [currentTrack, pendingPlayback, playbackBackend]);
 
   function setTheme(theme: ThemeName) {
     setLayout((current) => normalizeLayout({ ...current, theme }));
@@ -678,7 +731,7 @@ function App() {
     const nextQueue = queue.length ? queue : [track];
     setPlaybackQueue(nextQueue);
     setCurrentTrackId(track.id);
-    setPendingPlayback(true);
+    setPlaybackError(null);
     void markTrackPlayed(track.id)
       .then((updated) => {
         if (updated) {
@@ -686,6 +739,36 @@ function App() {
         }
       })
       .catch(() => undefined);
+
+    if (!isTauriRuntime()) {
+      setPlaybackBackend("webview");
+      setPendingPlayback(true);
+      return;
+    }
+
+    void startRustPlayback(track, nextQueue);
+  }
+
+  async function startRustPlayback(track: Track, queue: Track[]) {
+    const startIndex = Math.max(
+      0,
+      queue.findIndex((item) => item.id === track.id),
+    );
+
+    try {
+      setPlaybackBackend("rust");
+      await setRustPlaybackQueue(queue.map((item) => item.id), startIndex);
+      const state = await playRustQueueIndex(startIndex);
+      setPendingPlayback(false);
+      setIsPlaying(state?.status === "playing");
+      setCurrentTimeMs(state?.positionMs ?? 0);
+      setDurationMs(state?.durationMs ?? track.durationMs ?? 0);
+      setBackendStatus(`Rust audio: ${track.title}`);
+    } catch (error) {
+      setPlaybackBackend("webview");
+      setPendingPlayback(true);
+      setPlaybackError(`Rust audio fallback: ${readError(error)}`);
+    }
   }
 
   function playPlaylist() {
@@ -702,6 +785,16 @@ function App() {
     const audio = audioRef.current;
 
     if (isPlaying) {
+      if (playbackBackend === "rust") {
+        void pauseRustPlayback()
+          .then((state) => {
+            setIsPlaying(false);
+            setCurrentTimeMs(state?.positionMs ?? currentTimeMs);
+          })
+          .catch((error) => setPlaybackError(readError(error)));
+        return;
+      }
+
       audio?.pause();
       setIsPlaying(false);
       return;
@@ -712,6 +805,20 @@ function App() {
       if (first) {
         playTrack(first, playbackSource);
       }
+      return;
+    }
+
+    if (playbackBackend === "rust" && isTauriRuntime()) {
+      void resumeRustPlayback()
+        .then((state) => {
+          setIsPlaying(state?.status === "playing");
+          setCurrentTimeMs(state?.positionMs ?? currentTimeMs);
+        })
+        .catch((error) => {
+          setPlaybackBackend("webview");
+          setPendingPlayback(true);
+          setPlaybackError(`Rust audio fallback: ${readError(error)}`);
+        });
       return;
     }
 
@@ -742,11 +849,24 @@ function App() {
   function seekPlayback(percent: number) {
     const audio = audioRef.current;
     const targetDuration = Number.isFinite(audio?.duration) && audio?.duration ? audio.duration * 1000 : durationMs;
-    if (!audio || !targetDuration) {
+    if (!targetDuration) {
       return;
     }
 
     const nextTime = clamp(percent, 0, 1) * targetDuration;
+    if (playbackBackend === "rust" && isTauriRuntime()) {
+      void seekRustPlayback(nextTime)
+        .then((state) => {
+          setCurrentTimeMs(state?.positionMs ?? nextTime);
+        })
+        .catch((error) => setPlaybackError(readError(error)));
+      return;
+    }
+
+    if (!audio) {
+      return;
+    }
+
     audio.currentTime = nextTime / 1000;
     setCurrentTimeMs(nextTime);
   }
@@ -947,6 +1067,7 @@ function App() {
             durationMs={durationMs}
             isPlaying={isPlaying}
             playbackError={playbackError}
+            playbackBackend={playbackBackend}
             repeat={repeat}
             shuffle={shuffle}
             volume={volume}

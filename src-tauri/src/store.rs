@@ -785,6 +785,13 @@ impl LibraryStore {
             .map_err(FuseError::from)
     }
 
+    pub fn get_tracks_by_ids(&self, track_ids: &[i64]) -> FuseResult<Vec<Track>> {
+        track_ids
+            .iter()
+            .map(|track_id| self.get_track_by_id(*track_id))
+            .collect()
+    }
+
     pub fn mark_track_played(&self, track_id: i64) -> FuseResult<Track> {
         self.conn.execute(
             r#"
