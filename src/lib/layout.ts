@@ -7,6 +7,7 @@ export const moduleOrder: ModuleId[] = [
   "player",
   "queue",
   "mixer",
+  "swarm",
   "playlists",
   "stats",
 ];
@@ -18,6 +19,7 @@ export const defaultBlocks: Record<ModuleId, LayoutBlock> = {
   player: { id: "player", cols: 6, rows: 1 },
   queue: { id: "queue", cols: 3, rows: 1 },
   mixer: { id: "mixer", cols: 3, rows: 1 },
+  swarm: { id: "swarm", cols: 6, rows: 1 },
   playlists: { id: "playlists", cols: 6, rows: 1 },
   stats: { id: "stats", cols: 6, rows: 1 },
 };
@@ -33,13 +35,14 @@ export const defaultLayout: LayoutProfile = {
 
 export const layoutPresets: Record<string, Pick<LayoutProfile, "order" | "hidden" | "blocks">> = {
   Studio: {
-    order: ["now", "player", "queue", "mixer", "collection", "library", "playlists", "stats"],
+    order: ["now", "player", "queue", "mixer", "swarm", "collection", "library", "playlists", "stats"],
     hidden: [],
     blocks: [
       { id: "now", cols: 3, rows: 2 },
       { id: "player", cols: 6, rows: 1 },
       { id: "queue", cols: 3, rows: 1 },
       { id: "mixer", cols: 3, rows: 1 },
+      { id: "swarm", cols: 6, rows: 1 },
       { id: "collection", cols: 6, rows: 1 },
       { id: "library", cols: 3, rows: 1 },
       { id: "playlists", cols: 6, rows: 1 },
@@ -47,13 +50,14 @@ export const layoutPresets: Record<string, Pick<LayoutProfile, "order" | "hidden
     ],
   },
   Library: {
-    order: ["library", "collection", "playlists", "stats", "player", "now", "queue", "mixer"],
+    order: ["library", "collection", "playlists", "stats", "swarm", "player", "now", "queue", "mixer"],
     hidden: [],
     blocks: [
       { id: "library", cols: 3, rows: 1 },
       { id: "collection", cols: 6, rows: 2 },
       { id: "playlists", cols: 6, rows: 1 },
       { id: "stats", cols: 6, rows: 1 },
+      { id: "swarm", cols: 6, rows: 1 },
       { id: "player", cols: 6, rows: 1 },
       { id: "now", cols: 3, rows: 2 },
       { id: "queue", cols: 3, rows: 1 },
@@ -61,17 +65,48 @@ export const layoutPresets: Record<string, Pick<LayoutProfile, "order" | "hidden
     ],
   },
   Minimal: {
-    order: ["now", "player", "collection", "queue", "library", "mixer", "playlists", "stats"],
-    hidden: ["library", "mixer", "playlists", "stats"],
+    order: ["now", "player", "collection", "queue", "swarm", "library", "mixer", "playlists", "stats"],
+    hidden: ["library", "mixer", "swarm", "playlists", "stats"],
     blocks: [
       { id: "now", cols: 6, rows: 2 },
       { id: "player", cols: 6, rows: 1 },
       { id: "collection", cols: 6, rows: 1 },
       { id: "queue", cols: 3, rows: 1 },
+      { id: "swarm", cols: 6, rows: 1 },
       { id: "library", cols: 3, rows: 1 },
       { id: "mixer", cols: 3, rows: 1 },
       { id: "playlists", cols: 6, rows: 1 },
       { id: "stats", cols: 6, rows: 1 },
+    ],
+  },
+  Showcase: {
+    order: ["now", "player", "playlists", "collection", "swarm", "queue", "stats", "library", "mixer"],
+    hidden: [],
+    blocks: [
+      { id: "now", cols: 4, rows: 2 },
+      { id: "player", cols: 8, rows: 1 },
+      { id: "playlists", cols: 8, rows: 2 },
+      { id: "collection", cols: 4, rows: 2 },
+      { id: "swarm", cols: 8, rows: 1 },
+      { id: "queue", cols: 4, rows: 1 },
+      { id: "stats", cols: 4, rows: 1 },
+      { id: "library", cols: 4, rows: 1 },
+      { id: "mixer", cols: 4, rows: 1 },
+    ],
+  },
+  Playlist: {
+    order: ["playlists", "player", "queue", "collection", "swarm", "now", "library", "stats", "mixer"],
+    hidden: ["mixer"],
+    blocks: [
+      { id: "playlists", cols: 6, rows: 2 },
+      { id: "player", cols: 6, rows: 1 },
+      { id: "queue", cols: 3, rows: 2 },
+      { id: "collection", cols: 6, rows: 2 },
+      { id: "swarm", cols: 6, rows: 1 },
+      { id: "now", cols: 3, rows: 2 },
+      { id: "library", cols: 3, rows: 1 },
+      { id: "stats", cols: 6, rows: 1 },
+      { id: "mixer", cols: 3, rows: 1 },
     ],
   },
 };
@@ -172,7 +207,10 @@ function isTheme(value: unknown): value is ThemeName {
     value === "boreal" ||
     value === "ember" ||
     value === "violet" ||
-    value === "rose"
+    value === "rose" ||
+    value === "graphite" ||
+    value === "lagoon" ||
+    value === "daybreak"
   );
 }
 

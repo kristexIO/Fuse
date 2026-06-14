@@ -1,10 +1,12 @@
 import type { CSSProperties, ReactNode } from "react";
+import type { LucideIcon } from "lucide-react";
+import { GripVertical, Maximize2, X } from "lucide-react";
 import type { LayoutBlock, ModuleId } from "../types";
 
 interface ModuleCardProps {
   id: ModuleId;
   title: string;
-  icon: string;
+  icon: LucideIcon;
   block: LayoutBlock;
   dragging: boolean;
   dropTarget: boolean;
@@ -34,6 +36,7 @@ export function ModuleCard({
     "--min-h": `${block.rows <= 1 ? 194 : 194 + (block.rows - 1) * 206}px`,
     viewTransitionName: `module-${id}`,
   } as CSSProperties;
+  const Icon = icon;
 
   return (
     <article
@@ -49,14 +52,14 @@ export function ModuleCard({
       <header className="module-header">
         <div className="module-title">
           <span className="module-icon" aria-hidden="true">
-            {icon}
+            <Icon size={15} strokeWidth={2.1} />
           </span>
           <span>{title}</span>
         </div>
         <div className="module-tools">
           {headerActions}
           <button className="icon-btn drag-handle" type="button" title="Перетащить">
-            <span aria-hidden="true">::</span>
+            <GripVertical size={16} aria-hidden="true" />
           </button>
           <button
             className="icon-btn"
@@ -64,7 +67,7 @@ export function ModuleCard({
             title="Быстрый размер"
             onClick={() => onCycleSize(id)}
           >
-            <span aria-hidden="true">↗</span>
+            <Maximize2 size={15} aria-hidden="true" />
           </button>
           <button
             className="icon-btn"
@@ -73,7 +76,7 @@ export function ModuleCard({
             aria-label={`Скрыть блок ${title}`}
             onClick={() => onHide(id)}
           >
-            <span aria-hidden="true">×</span>
+            <X size={15} aria-hidden="true" />
           </button>
         </div>
       </header>

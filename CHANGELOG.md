@@ -2,19 +2,33 @@
 
 All notable Fuse changes are documented here.
 
-## Unreleased
+## [1.0.0] - 2026-06-10
 
 ### Added
 
 - Rust playback preview powered by `rodio`, with queue, play, pause, resume, seek, volume, and state commands.
 - Frontend playback backend selection with WebView audio fallback.
 - Full workspace visibility controls: hide all modules, show all modules, switch to a core workspace, hide individual cards, and restore hidden modules from the canvas.
+- Demo-ready web preview with desktop-only import actions disabled instead of simulated.
+- Working collection views for tracks, albums, and managed folders.
+- Playlist rename, delete confirmation, track reorder, and richer playlist cards.
+- Collapsible inspector, persisted queue restore, and safe localStorage parsing.
+- New themes: Graphite, Lagoon, and Daybreak.
+- Showcase and Playlist layout presets for presentation and playlist editing.
+- Frontend unit tests, one-command quality checks, and CI Clippy/frontend test gates.
 
 ### Changed
 
 - Player output label now reflects Rust audio vs WebView fallback.
 - Workspace customization now has a usable empty state and softer View Transition animations for click-based layout changes.
 - GitHub Actions workflows opt into Node 24 action runtime.
+- Workspace drag now uses a polished native drag preview.
+- Mixer placeholder is replaced by real library format distribution.
+
+### Release
+
+- Version bumped to `1.0.0`.
+- Windows MSI and NSIS setup bundles are produced by `npm run tauri build`.
 
 ## [0.1.0] - 2026-06-08
 
@@ -37,5 +51,4 @@ All notable Fuse changes are documented here.
 
 ### Known Gaps
 
-- Rust/WASAPI playback engine is planned after this preview build.
-- File watcher, code signing, auto-update, and optional tag write-back are not enabled yet.
+- Device selection/WASAPI controls, file watcher, code signing, auto-update, and optional tag write-back are not enabled yet.

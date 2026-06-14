@@ -1,4 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  BarChart3,
+  FolderPlus,
+  Library,
+  ListMusic,
+  MessageCircle,
+  Music2,
+  PanelRightClose,
+  PanelRightOpen,
+  Play,
+  Plus,
+  RadioTower,
+  Rows3,
+  Search,
+  SlidersHorizontal,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import "./App.css";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { ModuleCard } from "./components/ModuleCard";
@@ -11,16 +28,22 @@ import {
   PlaylistsPanel,
   QueuePanel,
   StatsPanel,
+  SwarmPanel,
 } from "./components/Panels";
 import {
   addTracksToPlaylist,
   addLibraryFolder,
   audioSourceForTrack,
+  cancelP2pTransfer,
   createPlaylist,
+  createPlaylistShareTicket,
+  createTrackShareTicket,
   deletePlaylist,
   getDiagnostics,
   getLibraryFolders,
   getLibrarySnapshot,
+  getP2pSettings,
+  getP2pStatus,
   getPlaylistTracks,
   getRustPlaybackState,
   getTrackArtwork,
@@ -33,15 +56,29 @@ import {
   pickMusicFolders,
   playRustQueueIndex,
   recordClientError,
+  removeLibraryFolder,
   removeTrackFromPlaylist,
+  resumeP2pShare,
+  reorderPlaylistTracks,
+  retryP2pTransfer,
+  revokeP2pShare,
   resumeRustPlayback,
+  saveP2pSettings,
   saveLayoutProfile,
   seekRustPlayback,
   setRustPlaybackQueue,
   setRustPlaybackVolume,
+  startDownloadFromTicket,
+  startP2p,
   startScan,
   setTrackArtwork,
+  stopP2p,
+  stopRustPlayback,
   updateTrackDetails,
+  updatePlaylist,
+  listP2pShares,
+  listP2pTransfers,
+  pauseP2pShare,
 } from "./lib/api";
 import {
   applyPreset,
@@ -50,16 +87,22 @@ import {
   normalizeLayout,
   updateBlock,
 } from "./lib/layout";
+import { readJsonStorage } from "./lib/storage";
 import type {
+  CollectionView,
   Density,
   LayoutProfile,
   LibraryFolder,
   LibrarySnapshot,
   ModuleId,
+  P2pSettings,
+  P2pStatus,
   ScanJob,
   ScanSummary,
+  SharedItem,
   ThemeName,
   Track,
+  TransferTask,
 } from "./types";
 
 const layoutStorageKey = "fuse.layout.v2";
@@ -69,6 +112,7 @@ type LayoutUpdater = (current: LayoutProfile) => LayoutProfile | Partial<LayoutP
 
 interface StoredPlayback {
   trackId: number | null;
+  queueIds: number[];
   volume: number;
   shuffle: boolean;
   repeat: boolean;
@@ -81,15 +125,16 @@ interface TrackEditorDraft {
   lyrics: string;
 }
 
-const moduleMeta: Record<ModuleId, { title: string; icon: string }> = {
-  library: { title: "Медиатека", icon: "□" },
-  now: { title: "Сейчас играет", icon: "♪" },
-  collection: { title: "Коллекция", icon: "≡" },
-  player: { title: "Плеер", icon: "▶" },
-  queue: { title: "Очередь", icon: "↳" },
-  mixer: { title: "Микшер", icon: "≋" },
-  playlists: { title: "Плейлисты", icon: "▦" },
-  stats: { title: "Сводка", icon: "◇" },
+const moduleMeta: Record<ModuleId, { title: string; icon: LucideIcon }> = {
+  library: { title: "Медиатека", icon: Library },
+  now: { title: "Сейчас играет", icon: Music2 },
+  collection: { title: "Коллекция", icon: ListMusic },
+  player: { title: "Плеер", icon: Play },
+  queue: { title: "Очередь", icon: Rows3 },
+  mixer: { title: "Форматы", icon: SlidersHorizontal },
+  swarm: { title: "Swarm", icon: RadioTower },
+  playlists: { title: "Плейлисты", icon: FolderPlus },
+  stats: { title: "Сводка", icon: BarChart3 },
 };
 
 const coreWorkspaceModules: ModuleId[] = ["now", "player", "collection", "queue"];
@@ -110,9 +155,23 @@ const emptySnapshot: LibrarySnapshot = {
 
 function App() {
   const storedPlayback = useMemo(readStoredPlayback, []);
+  const previewMode = !isTauriRuntime();
   const [layout, setLayout] = useState<LayoutProfile>(defaultLayout);
   const [library, setLibrary] = useState<LibrarySnapshot>(emptySnapshot);
   const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>([]);
+  const [p2pStatus, setP2pStatus] = useState<P2pStatus | null>(null);
+  const [p2pSettings, setP2pSettings] = useState<P2pSettings>({
+    enabled: false,
+    autoSeedDownloads: true,
+    importDir: null,
+    uploadLimitKbps: null,
+    downloadLimitKbps: null,
+  });
+  const [p2pShares, setP2pShares] = useState<SharedItem[]>([]);
+  const [p2pTransfers, setP2pTransfers] = useState<TransferTask[]>([]);
+  const [shareTicketDraft, setShareTicketDraft] = useState("");
+  const [collectionView, setCollectionView] = useState<CollectionView>("tracks");
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const [activePlaylistId, setActivePlaylistId] = useState<number | null>(null);
   const [activePlaylistTracks, setActivePlaylistTracks] = useState<Track[]>([]);
   const [playlistName, setPlaylistName] = useState("");
@@ -138,7 +197,7 @@ function App() {
   const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
   const [scanJob, setScanJob] = useState<ScanJob | null>(null);
   const [search, setSearch] = useState("");
-  const [backendStatus, setBackendStatus] = useState("Loading library...");
+  const [backendStatus, setBackendStatus] = useState(previewMode ? "Веб-превью: демо-данные" : "Загрузка медиатеки...");
   const [diagnosticsPath, setDiagnosticsPath] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [dragging, setDragging] = useState<ModuleId | null>(null);
@@ -147,6 +206,7 @@ function App() {
   const workspaceRef = useRef<HTMLElement | null>(null);
   const layoutRef = useRef(layout);
   const readyRef = useRef(false);
+  const restoredQueueRef = useRef(false);
 
   useEffect(() => {
     layoutRef.current = layout;
@@ -179,7 +239,7 @@ function App() {
 
         return snapshot.playlists[0]?.id ?? null;
       });
-      setBackendStatus(isTauriRuntime() ? "Rust backend ready" : "Browser preview with mock data");
+      setBackendStatus(isTauriRuntime() ? "Настольный движок готов" : "Веб-превью: демо-данные");
     } catch (error) {
       setBackendStatus(readError(error));
     }
@@ -202,11 +262,25 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    const local = localStorage.getItem(layoutStorageKey);
-    if (local) {
-      setLayout(normalizeLayout(JSON.parse(local)));
+  const refreshP2p = useCallback(async () => {
+    try {
+      const [status, settings, shares, transfers] = await Promise.all([
+        getP2pStatus(),
+        getP2pSettings(),
+        listP2pShares(),
+        listP2pTransfers(),
+      ]);
+      setP2pStatus(status);
+      setP2pSettings(settings);
+      setP2pShares(shares);
+      setP2pTransfers(transfers);
+    } catch (error) {
+      setBackendStatus(readError(error));
     }
+  }, []);
+
+  useEffect(() => {
+    setLayout(normalizeLayout(readJsonStorage<Partial<LayoutProfile> | null>(layoutStorageKey, null)));
 
     loadLayoutProfile("Studio")
       .then((profile) => {
@@ -222,7 +296,8 @@ function App() {
     void refreshLibrary("");
     void refreshLibraryFolders();
     void refreshDiagnostics();
-  }, [refreshDiagnostics, refreshLibrary, refreshLibraryFolders]);
+    void refreshP2p();
+  }, [refreshDiagnostics, refreshLibrary, refreshLibraryFolders, refreshP2p]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -350,6 +425,23 @@ function App() {
   }, [activePlaylistId, library.playlists]);
 
   useEffect(() => {
+    if (restoredQueueRef.current || storedPlayback.queueIds.length === 0 || library.tracks.length === 0) {
+      return;
+    }
+
+    const byId = new Map(library.tracks.map((track) => [track.id, track]));
+    const restored = storedPlayback.queueIds
+      .map((trackId) => byId.get(trackId))
+      .filter((track): track is Track => Boolean(track));
+
+    restoredQueueRef.current = true;
+
+    if (restored.length > 0) {
+      setPlaybackQueue(restored);
+    }
+  }, [library.tracks, storedPlayback.queueIds]);
+
+  useEffect(() => {
     const source = playbackQueue.length ? playbackQueue : playbackSource;
 
     if (source.length === 0) {
@@ -371,12 +463,13 @@ function App() {
       playbackStorageKey,
       JSON.stringify({
         trackId: currentTrackId,
+        queueIds: playbackQueue.map((track) => track.id),
         volume,
         shuffle,
         repeat,
       } satisfies StoredPlayback),
     );
-  }, [currentTrackId, volume, shuffle, repeat]);
+  }, [currentTrackId, playbackQueue, volume, shuffle, repeat]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -502,7 +595,7 @@ function App() {
 
       if (pendingPlayback) {
         setPendingPlayback(false);
-        setPlaybackError("Playback works in the Tauri desktop window after importing real local files.");
+        setPlaybackError("В веб-превью нет доступа к локальному аудиофайлу. Воспроизведение доступно в настольной версии после импорта.");
       }
 
       return;
@@ -519,7 +612,8 @@ function App() {
         .play()
         .then(() => {
           setIsPlaying(true);
-          setBackendStatus(`Playing: ${currentTrack.title}`);
+          recordSuccessfulPlay(currentTrack);
+          setBackendStatus(`Играет: ${currentTrack.title}`);
         })
         .catch((error) => {
           setIsPlaying(false);
@@ -617,25 +711,30 @@ function App() {
   }
 
   async function importFolders() {
+    if (previewMode) {
+      setBackendStatus("Импорт папок доступен в настольной версии Fuse.");
+      return;
+    }
+
     setScanning(true);
-    setBackendStatus("Waiting for folder selection...");
+    setBackendStatus("Ожидание выбора папки...");
 
     try {
       const paths = await pickMusicFolders();
       if (paths.length === 0) {
-        setBackendStatus(isTauriRuntime() ? "Import cancelled" : "Open the Tauri window to scan folders");
+        setBackendStatus("Импорт отменен");
         return;
       }
 
       await Promise.all(paths.map((path) => addLibraryFolder(path).catch(() => null)));
       await refreshLibraryFolders();
-      setBackendStatus("Scanning local library...");
+      setBackendStatus("Сканирование локальной медиатеки...");
       const job = await startScan(paths, { registerFolders: true });
       const summary = scanSummaryFromJob(job);
       setScanJob(job);
       setScanSummary(summary);
       await refreshLibrary(search);
-      setBackendStatus(`Scan complete: ${summary.added} added, ${summary.updated} updated`);
+      setBackendStatus(`Сканирование завершено: добавлено ${summary.added}, обновлено ${summary.updated}`);
     } catch (error) {
       setBackendStatus(readError(error));
     } finally {
@@ -644,23 +743,28 @@ function App() {
   }
 
   async function importTracks() {
+    if (previewMode) {
+      setBackendStatus("Добавление треков доступно в настольной версии Fuse.");
+      return;
+    }
+
     setScanning(true);
-    setBackendStatus("Waiting for track selection...");
+    setBackendStatus("Ожидание выбора треков...");
 
     try {
       const paths = await pickMusicFiles();
       if (paths.length === 0) {
-        setBackendStatus(isTauriRuntime() ? "Import cancelled" : "Open the Tauri window to add tracks");
+        setBackendStatus("Импорт отменен");
         return;
       }
 
-      setBackendStatus("Adding selected tracks...");
+      setBackendStatus("Добавление выбранных треков...");
       const job = await startScan(paths);
       const summary = scanSummaryFromJob(job);
       setScanJob(job);
       setScanSummary(summary);
       await refreshLibrary(search);
-      setBackendStatus(`Tracks added: ${summary.added} new, ${summary.updated} updated`);
+      setBackendStatus(`Треки добавлены: новых ${summary.added}, обновлено ${summary.updated}`);
     } catch (error) {
       setBackendStatus(readError(error));
     } finally {
@@ -675,7 +779,7 @@ function App() {
       setActivePlaylistId(playlist.id);
       await refreshLibrary(search);
       setActivePlaylistId(playlist.id);
-      setBackendStatus(`Playlist ready: ${playlist.name}`);
+      setBackendStatus(`Плейлист готов: ${playlist.name}`);
     } catch (error) {
       setBackendStatus(readError(error));
     }
@@ -683,12 +787,12 @@ function App() {
 
   async function addTrackToActivePlaylist(trackId: number) {
     try {
-      const playlist = activePlaylist ?? (await createPlaylist("Quick Mix"));
+      const playlist = activePlaylist ?? (await createPlaylist("Быстрый микс"));
       const updated = await addTracksToPlaylist(playlist.id, [trackId]);
       setActivePlaylistId(updated.id);
       await refreshLibrary(search);
       setActivePlaylistTracks(await getPlaylistTracks(updated.id));
-      setBackendStatus(`Added to ${updated.name}`);
+      setBackendStatus(`Добавлено в «${updated.name}»`);
     } catch (error) {
       setBackendStatus(readError(error));
     }
@@ -703,7 +807,7 @@ function App() {
       await removeTrackFromPlaylist(activePlaylistId, trackId);
       await refreshLibrary(search);
       setActivePlaylistTracks(await getPlaylistTracks(activePlaylistId));
-      setBackendStatus("Track removed from playlist");
+      setBackendStatus("Трек удален из плейлиста");
     } catch (error) {
       setBackendStatus(readError(error));
     }
@@ -714,13 +818,238 @@ function App() {
       return;
     }
 
+    const playlistNameForPrompt = activePlaylist?.name ?? "выбранный плейлист";
+    if (!window.confirm(`Удалить плейлист «${playlistNameForPrompt}»?`)) {
+      return;
+    }
+
     try {
       await deletePlaylist(activePlaylistId);
       setActivePlaylistId(null);
       setActivePlaylistTracks([]);
       await refreshLibrary(search);
-      setBackendStatus("Playlist deleted");
+      setBackendStatus("Плейлист удален");
     } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function renameActivePlaylist(name: string, description?: string | null) {
+    if (!activePlaylistId) {
+      return;
+    }
+
+    try {
+      const updated = await updatePlaylist(activePlaylistId, { name, description });
+      await refreshLibrary(search);
+      setActivePlaylistId(updated.id);
+      setBackendStatus(`Плейлист обновлен: ${updated.name}`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function moveTrackInActivePlaylist(trackId: number, direction: -1 | 1) {
+    if (!activePlaylistId) {
+      return;
+    }
+
+    const index = activePlaylistTracks.findIndex((track) => track.id === trackId);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= activePlaylistTracks.length) {
+      return;
+    }
+
+    const reordered = [...activePlaylistTracks];
+    const [track] = reordered.splice(index, 1);
+    reordered.splice(nextIndex, 0, track);
+
+    try {
+      await reorderPlaylistTracks(activePlaylistId, reordered.map((item) => item.id));
+      setActivePlaylistTracks(reordered);
+      await refreshLibrary(search);
+      setBackendStatus("Порядок плейлиста обновлен");
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function removeFolder(folderId: number) {
+    if (!window.confirm("Убрать папку из библиотеки Fuse? Треки останутся на диске.")) {
+      return;
+    }
+
+    try {
+      await removeLibraryFolder(folderId);
+      await refreshLibraryFolders();
+      setBackendStatus("Папка удалена из библиотеки");
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function rescanFolder(path: string) {
+    if (previewMode) {
+      setBackendStatus("Пересканирование доступно в настольной версии Fuse.");
+      return;
+    }
+
+    setScanning(true);
+    setBackendStatus(`Сканирование: ${path}`);
+    try {
+      const job = await startScan([path], { registerFolders: true });
+      const summary = scanSummaryFromJob(job);
+      setScanJob(job);
+      setScanSummary(summary);
+      await refreshLibrary(search);
+      await refreshLibraryFolders();
+      setBackendStatus(`Папка обновлена: добавлено ${summary.added}, обновлено ${summary.updated}`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function startSwarm() {
+    try {
+      const status = await startP2p();
+      setP2pStatus(status);
+      await refreshP2p();
+      setBackendStatus("Swarm включен: приватные ticket-раздачи доступны");
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function stopSwarm() {
+    try {
+      const status = await stopP2p();
+      setP2pStatus(status);
+      await refreshP2p();
+      setBackendStatus("Swarm остановлен");
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function updateP2pSettings(settings: P2pSettings) {
+    try {
+      const saved = await saveP2pSettings(settings);
+      setP2pSettings(saved);
+      await refreshP2p();
+      setBackendStatus("Настройки Swarm сохранены");
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function shareCurrentTrack() {
+    if (!currentTrack) {
+      setBackendStatus("Выберите трек для приватной раздачи");
+      return;
+    }
+
+    try {
+      const share = await createTrackShareTicket(currentTrack.id);
+      setShareTicketDraft(share.ticket);
+      await refreshP2p();
+      setBackendStatus(`Ticket создан: ${share.title}`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function shareActivePlaylist() {
+    if (!activePlaylist) {
+      setBackendStatus("Выберите плейлист для приватной раздачи");
+      return;
+    }
+
+    try {
+      const share = await createPlaylistShareTicket(activePlaylist.id);
+      setShareTicketDraft(share.ticket);
+      await refreshP2p();
+      setBackendStatus(`Ticket плейлиста создан: ${share.title}`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function copyShareTicket(ticket: string) {
+    try {
+      await navigator.clipboard.writeText(ticket);
+      setBackendStatus("Ticket скопирован в буфер обмена");
+    } catch {
+      setShareTicketDraft(ticket);
+      setBackendStatus("Ticket помещен в поле ввода");
+    }
+  }
+
+  async function downloadShareTicket() {
+    const ticket = shareTicketDraft.trim();
+    if (!ticket) {
+      return;
+    }
+
+    try {
+      const transfer = await startDownloadFromTicket(ticket);
+      await refreshLibrary(search);
+      await refreshP2p();
+      setBackendStatus(`Swarm загрузка: ${transfer.status}`);
+    } catch (error) {
+      await refreshP2p();
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function pauseShare(shareId: number) {
+    try {
+      await pauseP2pShare(shareId);
+      await refreshP2p();
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function resumeShare(shareId: number) {
+    try {
+      await resumeP2pShare(shareId);
+      await refreshP2p();
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function revokeShare(shareId: number) {
+    if (!window.confirm("Отозвать приватную раздачу? Уже скопированные ticket нельзя забрать обратно.")) {
+      return;
+    }
+
+    try {
+      await revokeP2pShare(shareId);
+      await refreshP2p();
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function cancelTransfer(transferId: number) {
+    try {
+      await cancelP2pTransfer(transferId);
+      await refreshP2p();
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function retryTransfer(transferId: number) {
+    try {
+      await retryP2pTransfer(transferId);
+      await refreshLibrary(search);
+      await refreshP2p();
+    } catch (error) {
+      await refreshP2p();
       setBackendStatus(readError(error));
     }
   }
@@ -739,7 +1068,7 @@ function App() {
       });
       replaceTrack(updated);
       await refreshLibrary(search);
-      setBackendStatus(`Track updated: ${updated.title}`);
+      setBackendStatus(`Трек обновлен: ${updated.title}`);
     } catch (error) {
       setBackendStatus(readError(error));
     }
@@ -750,10 +1079,15 @@ function App() {
       return;
     }
 
+    if (previewMode) {
+      setBackendStatus("Обложка меняется в настольной версии Fuse.");
+      return;
+    }
+
     try {
       const imagePath = await pickArtworkFile();
       if (!imagePath) {
-        setBackendStatus(isTauriRuntime() ? "Artwork selection cancelled" : "Open the Tauri window to choose artwork");
+        setBackendStatus(isTauriRuntime() ? "Выбор обложки отменен" : "Обложка меняется в настольной версии Fuse");
         return;
       }
 
@@ -762,7 +1096,7 @@ function App() {
       const artwork = await getTrackArtwork(updated.id);
       setArtworkUrls((current) => ({ ...current, [updated.id]: artwork?.dataUrl ?? null }));
       await refreshLibrary(search);
-      setBackendStatus(`Artwork updated: ${updated.title}`);
+      setBackendStatus(`Обложка обновлена: ${updated.title}`);
     } catch (error) {
       setBackendStatus(readError(error));
     }
@@ -779,17 +1113,7 @@ function App() {
     setPlaybackQueue((current) => current.map(replace));
   }
 
-  function playTrack(track: Track, queue = playbackSource) {
-    if (track.isMissing) {
-      setPlaybackError("This track is missing on disk. Rescan the library or restore the file.");
-      setBackendStatus(`Missing file: ${track.title}`);
-      return;
-    }
-
-    const nextQueue = queue.length ? queue : [track];
-    setPlaybackQueue(nextQueue);
-    setCurrentTrackId(track.id);
-    setPlaybackError(null);
+  function recordSuccessfulPlay(track: Track) {
     void markTrackPlayed(track.id)
       .then((updated) => {
         if (updated) {
@@ -797,6 +1121,19 @@ function App() {
         }
       })
       .catch(() => undefined);
+  }
+
+  function playTrack(track: Track, queue = playbackSource) {
+    if (track.isMissing) {
+      setPlaybackError("Файл не найден на диске. Пересканируйте библиотеку или верните файл.");
+      setBackendStatus(`Файл не найден: ${track.title}`);
+      return;
+    }
+
+    const nextQueue = queue.length ? queue : [track];
+    setPlaybackQueue(nextQueue);
+    setCurrentTrackId(track.id);
+    setPlaybackError(null);
 
     if (!isTauriRuntime()) {
       setPlaybackBackend("webview");
@@ -821,18 +1158,21 @@ function App() {
       setIsPlaying(state?.status === "playing");
       setCurrentTimeMs(state?.positionMs ?? 0);
       setDurationMs(state?.durationMs ?? track.durationMs ?? 0);
-      setBackendStatus(`Rust audio: ${track.title}`);
+      if (state?.status === "playing") {
+        recordSuccessfulPlay(track);
+      }
+      setBackendStatus(`Системное аудио: ${track.title}`);
     } catch (error) {
       setPlaybackBackend("webview");
       setPendingPlayback(true);
-      setPlaybackError(`Rust audio fallback: ${readError(error)}`);
+      setPlaybackError(`Переключение на WebView: ${readError(error)}`);
     }
   }
 
   function playPlaylist() {
     const source = activePlaylistTracks.length ? activePlaylistTracks : playbackSource;
     if (source.length === 0) {
-      setPlaybackError("Add tracks before starting playback.");
+      setPlaybackError("Добавьте треки перед запуском плейлиста.");
       return;
     }
 
@@ -875,12 +1215,34 @@ function App() {
         .catch((error) => {
           setPlaybackBackend("webview");
           setPendingPlayback(true);
-          setPlaybackError(`Rust audio fallback: ${readError(error)}`);
+          setPlaybackError(`Переключение на WebView: ${readError(error)}`);
         });
       return;
     }
 
     setPendingPlayback(true);
+  }
+
+  function stopPlayback() {
+    const audio = audioRef.current;
+
+    if (playbackBackend === "rust" && isTauriRuntime()) {
+      void stopRustPlayback()
+        .then((state) => {
+          setIsPlaying(false);
+          setCurrentTimeMs(state?.positionMs ?? 0);
+        })
+        .catch((error) => setPlaybackError(readError(error)));
+      return;
+    }
+
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+
+    setIsPlaying(false);
+    setCurrentTimeMs(0);
   }
 
   function playNext() {
@@ -984,6 +1346,21 @@ function App() {
     setDragging(id);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", id);
+    const module = (event.target instanceof Element
+      ? event.target.closest<HTMLElement>("[data-module]")
+      : null);
+    const meta = moduleMeta[id];
+
+    if (module) {
+      const rect = module.getBoundingClientRect();
+      const ghost = document.createElement("div");
+      ghost.className = "drag-preview";
+      ghost.textContent = meta.title;
+      ghost.style.width = `${Math.min(260, Math.max(180, rect.width * 0.72))}px`;
+      document.body.appendChild(ghost);
+      event.dataTransfer.setDragImage(ghost, 24, 22);
+      window.setTimeout(() => ghost.remove(), 0);
+    }
   }
 
   function handleDragEnd() {
@@ -1109,9 +1486,13 @@ function App() {
         return (
           <CollectionPanel
             tracks={library.tracks}
+            albums={library.albums}
+            libraryFolders={libraryFolders}
+            view={collectionView}
             activePlaylist={activePlaylist}
             activePlaylistTrackIds={activePlaylistTrackIds}
             currentTrackId={currentTrack?.id ?? null}
+            onViewChange={setCollectionView}
             onPlayTrack={(track) => playTrack(track, library.tracks)}
             onAddTrackToPlaylist={addTrackToActivePlaylist}
           />
@@ -1132,6 +1513,7 @@ function App() {
             onNext={playNext}
             onPrevious={playPrevious}
             onSeek={seekPlayback}
+            onStop={stopPlayback}
             onTogglePlay={togglePlayback}
             onToggleRepeat={() => setRepeat((current) => !current)}
             onToggleShuffle={() => setShuffle((current) => !current)}
@@ -1148,7 +1530,31 @@ function App() {
           />
         );
       case "mixer":
-        return <MixerPanel />;
+        return <MixerPanel tracks={library.tracks} />;
+      case "swarm":
+        return (
+          <SwarmPanel
+            p2pStatus={p2pStatus}
+            shares={p2pShares}
+            transfers={p2pTransfers}
+            ticketDraft={shareTicketDraft}
+            previewMode={previewMode}
+            currentTrack={currentTrack}
+            activePlaylist={activePlaylist}
+            onTicketDraftChange={setShareTicketDraft}
+            onStartP2p={startSwarm}
+            onStopP2p={stopSwarm}
+            onShareTrack={shareCurrentTrack}
+            onSharePlaylist={shareActivePlaylist}
+            onCopyTicket={copyShareTicket}
+            onDownloadTicket={downloadShareTicket}
+            onPauseShare={pauseShare}
+            onResumeShare={resumeShare}
+            onRevokeShare={revokeShare}
+            onCancelTransfer={cancelTransfer}
+            onRetryTransfer={retryTransfer}
+          />
+        );
       case "playlists":
         return (
           <PlaylistsPanel
@@ -1159,7 +1565,9 @@ function App() {
             onSelectPlaylist={setActivePlaylistId}
             onRemoveTrack={removeFromActivePlaylist}
             onDeletePlaylist={deleteActivePlaylist}
+            onMoveTrack={moveTrackInActivePlaylist}
             onPlayPlaylist={playPlaylist}
+            onRenamePlaylist={renameActivePlaylist}
           />
         );
       case "stats":
@@ -1179,7 +1587,7 @@ function App() {
         onEnded={handleTrackEnded}
         onError={() => {
           setIsPlaying(false);
-          setPlaybackError("Could not play this local audio file.");
+          setPlaybackError("Не удалось воспроизвести локальный аудиофайл.");
         }}
         onLoadedMetadata={(event) => {
           const seconds = event.currentTarget.duration;
@@ -1199,7 +1607,7 @@ function App() {
         </div>
 
         <label className="command">
-          <span aria-hidden="true">⌕</span>
+          <Search size={16} aria-hidden="true" />
           <input
             type="search"
             placeholder="Поиск треков, папок, тегов, плейлистов"
@@ -1209,19 +1617,36 @@ function App() {
         </label>
 
         <div className="top-actions">
-          <button className="icon-btn" type="button" title="Добавить треки" onClick={importTracks}>
-            +
+          {previewMode && (
+            <span className="mode-badge" title="Веб-превью работает с демо-данными">
+              Демо-режим
+            </span>
+          )}
+          <button
+            className="icon-btn"
+            type="button"
+            title={previewMode ? "Импорт доступен в настольной версии" : "Добавить треки"}
+            onClick={importTracks}
+            disabled={previewMode}
+          >
+            <Plus size={17} aria-hidden="true" />
           </button>
-          <button className="icon-btn" type="button" title="Импорт папки" onClick={importFolders}>
-            ⌁
+          <button
+            className="icon-btn"
+            type="button"
+            title={previewMode ? "Импорт доступен в настольной версии" : "Импорт папки"}
+            onClick={importFolders}
+            disabled={previewMode}
+          >
+            <FolderPlus size={17} aria-hidden="true" />
           </button>
-          <button className="icon-btn" type="button" title="Настройки">⚙</button>
-          <button className="icon-btn" type="button" title="Свернуть">−</button>
-          <button className="icon-btn" type="button" title="Развернуть">□</button>
+          <button className="icon-btn" type="button" title={inspectorOpen ? "Скрыть настройки" : "Показать настройки"} onClick={() => setInspectorOpen((current) => !current)}>
+            {inspectorOpen ? <PanelRightClose size={17} aria-hidden="true" /> : <PanelRightOpen size={17} aria-hidden="true" />}
+          </button>
         </div>
       </header>
 
-      <main className="app-grid">
+      <main className={`app-grid ${inspectorOpen ? "has-inspector" : "is-inspector-closed"}`}>
         <section
           className={`workspace ${dragging ? "is-dragging" : ""}`}
           ref={workspaceRef}
@@ -1262,9 +1687,10 @@ function App() {
                           className={`icon-btn ${showLyrics ? "is-active" : ""}`}
                           type="button"
                           title={showLyrics ? "Показать обложку" : "Показать текст песни"}
+                          aria-label={showLyrics ? "Показать обложку" : "Показать текст песни"}
                           onClick={() => setShowLyrics(!showLyrics)}
                         >
-                          💬
+                          <MessageCircle size={16} aria-hidden="true" />
                         </button>
                       ) : undefined
                     }
@@ -1285,34 +1711,45 @@ function App() {
           )}
         </section>
 
-        <InspectorPanel
-          artworkUrl={currentArtworkUrl}
-          currentTrack={currentTrack}
-          layout={layout}
-          libraryFolders={libraryFolders}
-          scanSummary={scanSummary}
-          scanJob={scanJob}
-          backendStatus={backendStatus}
-          diagnosticsPath={diagnosticsPath}
-          scanning={scanning}
-          playlistName={playlistName}
-          trackEditorDraft={trackEditorDraft}
-          onThemeChange={setTheme}
-          onDensityChange={setDensity}
-          onPreset={applyLayoutPreset}
-          onToggleModule={toggleModule}
-          onHideAll={hideAllModules}
-          onShowAll={showAllModules}
-          onShowCore={showCoreWorkspace}
-          onReset={resetLayout}
-          onImport={importFolders}
-          onImportTracks={importTracks}
-          onPlaylistNameChange={setPlaylistName}
-          onCreatePlaylist={createNewPlaylist}
-          onPickArtwork={pickTrackArtwork}
-          onSaveTrackDetails={saveTrackDetails}
-          onTrackEditorChange={setTrackEditorDraft}
-        />
+        <div className={`inspector-shell ${inspectorOpen ? "is-open" : "is-closed"}`}>
+          <InspectorPanel
+            artworkUrl={currentArtworkUrl}
+            currentTrack={currentTrack}
+            layout={layout}
+            libraryFolders={libraryFolders}
+            p2pSettings={p2pSettings}
+            p2pStatus={p2pStatus}
+            scanSummary={scanSummary}
+            scanJob={scanJob}
+            backendStatus={backendStatus}
+            diagnosticsPath={diagnosticsPath}
+            scanning={scanning}
+            playlistName={playlistName}
+            previewMode={previewMode}
+            trackEditorDraft={trackEditorDraft}
+            onThemeChange={setTheme}
+            onDensityChange={setDensity}
+            onPreset={applyLayoutPreset}
+            onToggleModule={toggleModule}
+            onHideAll={hideAllModules}
+            onShowAll={showAllModules}
+            onShowCore={showCoreWorkspace}
+            onReset={resetLayout}
+            onImport={importFolders}
+            onImportTracks={importTracks}
+            onP2pSettingsChange={updateP2pSettings}
+            onStartP2p={startSwarm}
+            onStopP2p={stopSwarm}
+            onRemoveLibraryFolder={removeFolder}
+            onRescanLibraryFolder={rescanFolder}
+            onPlaylistNameChange={setPlaylistName}
+            onCreatePlaylist={createNewPlaylist}
+            onPickArtwork={pickTrackArtwork}
+            onSaveTrackDetails={saveTrackDetails}
+            onTrackEditorChange={setTrackEditorDraft}
+            onClose={() => setInspectorOpen(false)}
+          />
+        </div>
       </main>
     </div>
   );
@@ -1355,12 +1792,15 @@ function WorkspaceEmpty({
       </div>
       {hiddenModules.length > 0 && (
         <div className="restore-grid" aria-label="Скрытые блоки">
-          {hiddenModules.map((id) => (
-            <button className="restore-chip" type="button" key={id} onClick={() => onShowModule(id)}>
-              <span aria-hidden="true">{moduleMeta[id].icon}</span>
-              {moduleMeta[id].title}
-            </button>
-          ))}
+          {hiddenModules.map((id) => {
+            const Icon = moduleMeta[id].icon;
+            return (
+              <button className="restore-chip" type="button" key={id} onClick={() => onShowModule(id)}>
+                <span aria-hidden="true"><Icon size={14} /></span>
+                {moduleMeta[id].title}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1378,12 +1818,15 @@ function HiddenModuleDock({ hiddenModules, onShowAll, onShowModule }: HiddenModu
     <div className="hidden-dock" aria-label="Скрытые блоки">
       <div className="hidden-dock-label">Скрыто: {hiddenModules.length}</div>
       <div className="hidden-dock-list">
-        {hiddenModules.map((id) => (
-          <button className="restore-chip" type="button" key={id} onClick={() => onShowModule(id)}>
-            <span aria-hidden="true">{moduleMeta[id].icon}</span>
-            {moduleMeta[id].title}
-          </button>
-        ))}
+        {hiddenModules.map((id) => {
+          const Icon = moduleMeta[id].icon;
+          return (
+            <button className="restore-chip" type="button" key={id} onClick={() => onShowModule(id)}>
+              <span aria-hidden="true"><Icon size={14} /></span>
+              {moduleMeta[id].title}
+            </button>
+          );
+        })}
       </div>
       <button className="secondary-btn" type="button" onClick={onShowAll}>
         Показать все
@@ -1447,27 +1890,22 @@ function prefersReducedMotion(): boolean {
 function readStoredPlayback(): StoredPlayback {
   const fallback: StoredPlayback = {
     trackId: null,
+    queueIds: [],
     volume: 0.72,
     shuffle: false,
     repeat: false,
   };
 
-  try {
-    const raw = localStorage.getItem(playbackStorageKey);
-    if (!raw) {
-      return fallback;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<StoredPlayback>;
-    return {
-      trackId: typeof parsed.trackId === "number" ? parsed.trackId : null,
-      volume: typeof parsed.volume === "number" ? clamp(parsed.volume, 0, 1) : fallback.volume,
-      shuffle: Boolean(parsed.shuffle),
-      repeat: Boolean(parsed.repeat),
-    };
-  } catch {
-    return fallback;
-  }
+  const parsed = readJsonStorage<Partial<StoredPlayback>>(playbackStorageKey, fallback);
+  return {
+    trackId: typeof parsed.trackId === "number" ? parsed.trackId : null,
+    queueIds: Array.isArray(parsed.queueIds)
+      ? parsed.queueIds.filter((trackId): trackId is number => typeof trackId === "number")
+      : [],
+    volume: typeof parsed.volume === "number" ? clamp(parsed.volume, 0, 1) : fallback.volume,
+    shuffle: Boolean(parsed.shuffle),
+    repeat: Boolean(parsed.repeat),
+  };
 }
 
 function scanSummaryFromJob(job: ScanJob): ScanSummary {
@@ -1489,7 +1927,7 @@ function readError(error: unknown): string {
     return String((error as { message: unknown }).message);
   }
 
-  return "Unknown Fuse error";
+  return "Неизвестная ошибка Fuse";
 }
 
 export default App;

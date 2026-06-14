@@ -5,7 +5,10 @@ export type ThemeName =
   | "boreal"
   | "ember"
   | "violet"
-  | "rose";
+  | "rose"
+  | "graphite"
+  | "lagoon"
+  | "daybreak";
 
 export type Density = "compact" | "comfortable" | "spacious";
 
@@ -16,8 +19,11 @@ export type ModuleId =
   | "player"
   | "queue"
   | "mixer"
+  | "swarm"
   | "playlists"
   | "stats";
+
+export type CollectionView = "tracks" | "albums" | "folders";
 
 export interface Track {
   id: number;
@@ -144,6 +150,96 @@ export interface AppSettings {
   firstRunComplete: boolean;
   reducedMotion: boolean;
   activeLayout?: string | null;
+}
+
+export interface PeerSource {
+  nodeId: string;
+  addr: unknown;
+  label?: string | null;
+}
+
+export interface ShareTicketItem {
+  title: string;
+  artist?: string | null;
+  album?: string | null;
+  format: string;
+  fileHash: string;
+  sizeBytes: number;
+}
+
+export interface ShareTicketDisplay {
+  title: string;
+  artist?: string | null;
+  album?: string | null;
+  itemCount: number;
+}
+
+export interface FuseShareTicket {
+  version: number;
+  scope: string;
+  manifestHash: string;
+  swarmTopic: string;
+  providers: PeerSource[];
+  display: ShareTicketDisplay;
+  items: ShareTicketItem[];
+  sizeBytes: number;
+  createdAt: number;
+}
+
+export interface SharedItem {
+  id: number;
+  scope: string;
+  trackId?: number | null;
+  playlistId?: number | null;
+  title: string;
+  artist?: string | null;
+  album?: string | null;
+  manifestHash: string;
+  swarmTopic: string;
+  sizeBytes: number;
+  itemCount: number;
+  ticket: string;
+  state: string;
+  createdAt: number;
+  updatedAt: number;
+  revokedAt?: number | null;
+}
+
+export interface TransferTask {
+  id: number;
+  direction: string;
+  status: string;
+  title: string;
+  artist?: string | null;
+  album?: string | null;
+  manifestHash: string;
+  swarmTopic: string;
+  sizeBytes: number;
+  downloadedBytes: number;
+  peerCount: number;
+  ticket: string;
+  outputPath?: string | null;
+  error?: string | null;
+  createdAt: number;
+  updatedAt: number;
+  finishedAt?: number | null;
+}
+
+export interface P2pSettings {
+  enabled: boolean;
+  autoSeedDownloads: boolean;
+  importDir?: string | null;
+  uploadLimitKbps?: number | null;
+  downloadLimitKbps?: number | null;
+}
+
+export interface P2pStatus extends P2pSettings {
+  running: boolean;
+  nodeId?: string | null;
+  nodeAddr?: unknown;
+  activeShares: number;
+  activeDownloads: number;
+  lastError?: string | null;
 }
 
 export interface PlaybackState {

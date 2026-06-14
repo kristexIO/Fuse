@@ -1,7 +1,8 @@
 use crate::error::{FuseError, FuseResult};
 use crate::models::{
     Album, AppDiagnostics, AppSettings, Artist, Artwork, EventLog, LayoutProfile, LibraryFolder,
-    Playlist, ScanError, ScanJob, ScanOptions, ScanSummary, Track, TrackDraft, TrackQuery,
+    P2pSettings, P2pShareDraft, Playlist, ScanError, ScanJob, ScanOptions, ScanSummary,
+    SharedItem, SharedProviderFile, Track, TrackDraft, TrackQuery, TransferTask,
 };
 use base64::{engine::general_purpose, Engine as _};
 use lofty::picture::PictureType;
@@ -158,6 +159,79 @@ impl LibraryStore {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS p2p_shares (
+                id INTEGER PRIMARY KEY,
+                scope TEXT NOT NULL,
+                track_id INTEGER REFERENCES tracks(id) ON DELETE SET NULL,
+                playlist_id INTEGER REFERENCES playlists(id) ON DELETE SET NULL,
+                title TEXT NOT NULL,
+                artist TEXT,
+                album TEXT,
+                manifest_hash TEXT NOT NULL,
+                swarm_topic TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                item_count INTEGER NOT NULL,
+                ticket TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                revoked_at INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_p2p_shares_state ON p2p_shares(state);
+            CREATE INDEX IF NOT EXISTS idx_p2p_shares_manifest ON p2p_shares(manifest_hash);
+
+            CREATE TABLE IF NOT EXISTS p2p_share_files (
+                id INTEGER PRIMARY KEY,
+                share_id INTEGER NOT NULL REFERENCES p2p_shares(id) ON DELETE CASCADE,
+                track_id INTEGER REFERENCES tracks(id) ON DELETE SET NULL,
+                file_hash TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                title TEXT NOT NULL,
+                artist TEXT,
+                album TEXT,
+                format TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_p2p_share_files_hash ON p2p_share_files(file_hash);
+
+            CREATE TABLE IF NOT EXISTS p2p_downloads (
+                id INTEGER PRIMARY KEY,
+                ticket TEXT NOT NULL,
+                title TEXT NOT NULL,
+                artist TEXT,
+                album TEXT,
+                manifest_hash TEXT NOT NULL,
+                swarm_topic TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                peer_count INTEGER NOT NULL DEFAULT 0,
+                output_path TEXT,
+                error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                finished_at INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_p2p_downloads_status ON p2p_downloads(status);
+
+            CREATE TABLE IF NOT EXISTS p2p_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS p2p_peer_events (
+                id INTEGER PRIMARY KEY,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL,
+                peer TEXT,
+                created_at INTEGER NOT NULL
             );
             "#,
         )?;
@@ -458,7 +532,7 @@ impl LibraryStore {
     pub fn get_albums(&self) -> FuseResult<Vec<Album>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT COALESCE(NULLIF(album, ''), 'Unknown Album') AS name,
+            SELECT COALESCE(NULLIF(album, ''), 'Без альбома') AS name,
                    NULLIF(artist, '') AS artist,
                    COUNT(*) AS track_count
             FROM tracks
@@ -479,7 +553,7 @@ impl LibraryStore {
     pub fn get_artists(&self) -> FuseResult<Vec<Artist>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT COALESCE(NULLIF(artist, ''), 'Unknown Artist') AS name,
+            SELECT COALESCE(NULLIF(artist, ''), 'Неизвестный исполнитель') AS name,
                    COUNT(*) AS track_count
             FROM tracks
             GROUP BY name
@@ -935,6 +1009,348 @@ impl LibraryStore {
             .transpose()
             .map_err(FuseError::from)
     }
+
+    pub fn get_p2p_settings(&self) -> FuseResult<P2pSettings> {
+        let data = self
+            .conn
+            .query_row("SELECT value FROM p2p_settings WHERE key = 'p2p'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?;
+
+        let settings = match data {
+            Some(value) => serde_json::from_str(&value)?,
+            None => P2pSettings::default(),
+        };
+
+        Ok(self.normalize_p2p_settings(settings))
+    }
+
+    pub fn save_p2p_settings(&self, settings: P2pSettings) -> FuseResult<P2pSettings> {
+        let settings = self.normalize_p2p_settings(settings);
+        let data = serde_json::to_string(&settings)?;
+        self.conn.execute(
+            r#"
+            INSERT INTO p2p_settings (key, value, updated_at)
+            VALUES ('p2p', ?1, ?2)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            "#,
+            params![data, now_epoch_seconds()],
+        )?;
+        Ok(settings)
+    }
+
+    pub fn count_active_p2p_shares(&self) -> FuseResult<i64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM p2p_shares WHERE state = 'active' AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(FuseError::from)
+    }
+
+    pub fn count_active_p2p_downloads(&self) -> FuseResult<i64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM p2p_downloads WHERE status IN ('pending', 'downloading')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(FuseError::from)
+    }
+
+    pub fn create_p2p_share(&self, draft: P2pShareDraft) -> FuseResult<SharedItem> {
+        let P2pShareDraft {
+            scope,
+            track_id,
+            playlist_id,
+            title,
+            artist,
+            album,
+            manifest_hash,
+            swarm_topic,
+            size_bytes,
+            item_count,
+            ticket,
+            files,
+        } = draft;
+        let now = now_epoch_seconds();
+        self.conn.execute(
+            r#"
+            INSERT INTO p2p_shares (
+                scope, track_id, playlist_id, title, artist, album, manifest_hash,
+                swarm_topic, size_bytes, item_count, ticket, state, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12, ?12)
+            "#,
+            params![
+                scope,
+                track_id,
+                playlist_id,
+                title,
+                artist,
+                album,
+                manifest_hash,
+                swarm_topic,
+                size_bytes,
+                item_count,
+                ticket,
+                now
+            ],
+        )?;
+        let share_id = self.conn.last_insert_rowid();
+
+        for file in files {
+            self.conn.execute(
+                r#"
+                INSERT INTO p2p_share_files (
+                    share_id, track_id, file_hash, local_path, title, artist, album,
+                    format, size_bytes, created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                "#,
+                params![
+                    share_id,
+                    file.track_id,
+                    file.file_hash,
+                    file.local_path,
+                    file.title,
+                    file.artist,
+                    file.album,
+                    file.format,
+                    file.size_bytes,
+                    now
+                ],
+            )?;
+        }
+
+        self.get_p2p_share(share_id)
+    }
+
+    pub fn list_p2p_shares(&self) -> FuseResult<Vec<SharedItem>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, scope, track_id, playlist_id, title, artist, album,
+                   manifest_hash, swarm_topic, size_bytes, item_count, ticket,
+                   state, created_at, updated_at, revoked_at
+            FROM p2p_shares
+            ORDER BY created_at DESC, id DESC
+            "#,
+        )?;
+        let rows = stmt.query_map([], shared_item_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(FuseError::from)
+    }
+
+    pub fn list_active_provider_files(&self) -> FuseResult<Vec<SharedProviderFile>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT f.file_hash, f.local_path, f.title, f.artist, f.album, f.format, f.size_bytes
+            FROM p2p_share_files f
+            JOIN p2p_shares s ON s.id = f.share_id
+            WHERE s.state = 'active' AND s.revoked_at IS NULL
+            ORDER BY s.created_at DESC, f.id ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], shared_provider_file_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(FuseError::from)
+    }
+
+    pub fn pause_p2p_share(&self, share_id: i64) -> FuseResult<SharedItem> {
+        self.update_p2p_share_state(share_id, "paused")
+    }
+
+    pub fn resume_p2p_share(&self, share_id: i64) -> FuseResult<SharedItem> {
+        self.update_p2p_share_state(share_id, "active")
+    }
+
+    pub fn revoke_p2p_share(&self, share_id: i64) -> FuseResult<SharedItem> {
+        self.conn.execute(
+            r#"
+            UPDATE p2p_shares
+            SET state = 'revoked', revoked_at = ?2, updated_at = ?2
+            WHERE id = ?1
+            "#,
+            params![share_id, now_epoch_seconds()],
+        )?;
+        self.get_p2p_share(share_id)
+    }
+
+    pub fn create_p2p_download(
+        &self,
+        ticket: String,
+        decoded: &crate::models::FuseShareTicket,
+    ) -> FuseResult<TransferTask> {
+        let now = now_epoch_seconds();
+        self.conn.execute(
+            r#"
+            INSERT INTO p2p_downloads (
+                ticket, title, artist, album, manifest_hash, swarm_topic,
+                size_bytes, downloaded_bytes, status, peer_count, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 'pending', ?8, ?9, ?9)
+            "#,
+            params![
+                ticket,
+                &decoded.display.title,
+                decoded.display.artist.as_deref(),
+                decoded.display.album.as_deref(),
+                &decoded.manifest_hash,
+                &decoded.swarm_topic,
+                decoded.size_bytes,
+                decoded.providers.len() as i64,
+                now
+            ],
+        )?;
+        self.get_p2p_download(self.conn.last_insert_rowid())
+    }
+
+    pub fn mark_p2p_download_downloading(&self, download_id: i64) -> FuseResult<TransferTask> {
+        self.conn.execute(
+            r#"
+            UPDATE p2p_downloads
+            SET status = 'downloading', error = NULL, updated_at = ?2
+            WHERE id = ?1
+            "#,
+            params![download_id, now_epoch_seconds()],
+        )?;
+        self.get_p2p_download(download_id)
+    }
+
+    pub fn finish_p2p_download(
+        &self,
+        download_id: i64,
+        downloaded_bytes: i64,
+        output_path: Option<String>,
+    ) -> FuseResult<TransferTask> {
+        let now = now_epoch_seconds();
+        self.conn.execute(
+            r#"
+            UPDATE p2p_downloads
+            SET status = 'completed',
+                downloaded_bytes = ?2,
+                output_path = ?3,
+                error = NULL,
+                updated_at = ?4,
+                finished_at = ?4
+            WHERE id = ?1
+            "#,
+            params![download_id, downloaded_bytes, output_path, now],
+        )?;
+        self.get_p2p_download(download_id)
+    }
+
+    pub fn fail_p2p_download(&self, download_id: i64, error: String) -> FuseResult<TransferTask> {
+        let now = now_epoch_seconds();
+        self.conn.execute(
+            r#"
+            UPDATE p2p_downloads
+            SET status = 'failed', error = ?2, updated_at = ?3, finished_at = ?3
+            WHERE id = ?1
+            "#,
+            params![download_id, error, now],
+        )?;
+        self.get_p2p_download(download_id)
+    }
+
+    pub fn cancel_p2p_transfer(&self, download_id: i64) -> FuseResult<TransferTask> {
+        let now = now_epoch_seconds();
+        self.conn.execute(
+            r#"
+            UPDATE p2p_downloads
+            SET status = 'cancelled', updated_at = ?2, finished_at = ?2
+            WHERE id = ?1 AND status IN ('pending', 'downloading', 'failed')
+            "#,
+            params![download_id, now],
+        )?;
+        self.get_p2p_download(download_id)
+    }
+
+    pub fn retry_p2p_transfer(&self, download_id: i64) -> FuseResult<TransferTask> {
+        self.conn.execute(
+            r#"
+            UPDATE p2p_downloads
+            SET status = 'pending',
+                downloaded_bytes = 0,
+                output_path = NULL,
+                error = NULL,
+                updated_at = ?2,
+                finished_at = NULL
+            WHERE id = ?1
+            "#,
+            params![download_id, now_epoch_seconds()],
+        )?;
+        self.get_p2p_download(download_id)
+    }
+
+    pub fn list_p2p_transfers(&self) -> FuseResult<Vec<TransferTask>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, ticket, title, artist, album, manifest_hash, swarm_topic,
+                   size_bytes, downloaded_bytes, status, peer_count, output_path,
+                   error, created_at, updated_at, finished_at
+            FROM p2p_downloads
+            ORDER BY created_at DESC, id DESC
+            "#,
+        )?;
+        let rows = stmt.query_map([], transfer_task_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(FuseError::from)
+    }
+
+    pub fn get_p2p_download(&self, download_id: i64) -> FuseResult<TransferTask> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT id, ticket, title, artist, album, manifest_hash, swarm_topic,
+                       size_bytes, downloaded_bytes, status, peer_count, output_path,
+                       error, created_at, updated_at, finished_at
+                FROM p2p_downloads
+                WHERE id = ?1
+                "#,
+                params![download_id],
+                transfer_task_from_row,
+            )
+            .map_err(FuseError::from)
+    }
+
+    fn get_p2p_share(&self, share_id: i64) -> FuseResult<SharedItem> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT id, scope, track_id, playlist_id, title, artist, album,
+                       manifest_hash, swarm_topic, size_bytes, item_count, ticket,
+                       state, created_at, updated_at, revoked_at
+                FROM p2p_shares
+                WHERE id = ?1
+                "#,
+                params![share_id],
+                shared_item_from_row,
+            )
+            .map_err(FuseError::from)
+    }
+
+    fn update_p2p_share_state(&self, share_id: i64, state: &str) -> FuseResult<SharedItem> {
+        self.conn.execute(
+            r#"
+            UPDATE p2p_shares
+            SET state = ?2, updated_at = ?3
+            WHERE id = ?1 AND revoked_at IS NULL
+            "#,
+            params![share_id, state, now_epoch_seconds()],
+        )?;
+        self.get_p2p_share(share_id)
+    }
+
+    fn normalize_p2p_settings(&self, mut settings: P2pSettings) -> P2pSettings {
+        if settings.import_dir.as_deref().unwrap_or("").trim().is_empty() {
+            settings.import_dir = self.app_data_dir.as_ref().map(|path| {
+                path.join("swarm-imports")
+                    .to_string_lossy()
+                    .to_string()
+            });
+        }
+        settings
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1076,6 +1492,63 @@ fn library_folder_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryF
         added_at: row.get(2)?,
         last_scanned_at: row.get(3)?,
         ignored_patterns: row.get(4)?,
+    })
+}
+
+fn shared_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SharedItem> {
+    Ok(SharedItem {
+        id: row.get(0)?,
+        scope: row.get(1)?,
+        track_id: row.get(2)?,
+        playlist_id: row.get(3)?,
+        title: row.get(4)?,
+        artist: row.get(5)?,
+        album: row.get(6)?,
+        manifest_hash: row.get(7)?,
+        swarm_topic: row.get(8)?,
+        size_bytes: row.get(9)?,
+        item_count: row.get(10)?,
+        ticket: row.get(11)?,
+        state: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        revoked_at: row.get(15)?,
+    })
+}
+
+fn shared_provider_file_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<SharedProviderFile> {
+    Ok(SharedProviderFile {
+        file_hash: row.get(0)?,
+        path: row.get(1)?,
+        title: row.get(2)?,
+        artist: row.get(3)?,
+        album: row.get(4)?,
+        format: row.get(5)?,
+        size_bytes: row.get(6)?,
+    })
+}
+
+fn transfer_task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TransferTask> {
+    Ok(TransferTask {
+        id: row.get(0)?,
+        direction: "download".to_string(),
+        ticket: row.get(1)?,
+        title: row.get(2)?,
+        artist: row.get(3)?,
+        album: row.get(4)?,
+        manifest_hash: row.get(5)?,
+        swarm_topic: row.get(6)?,
+        size_bytes: row.get(7)?,
+        downloaded_bytes: row.get(8)?,
+        status: row.get(9)?,
+        peer_count: row.get(10)?,
+        output_path: row.get(11)?,
+        error: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        finished_at: row.get(15)?,
     })
 }
 
@@ -1332,6 +1805,7 @@ fn now_epoch_seconds() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::ShareFileDraft;
     use crate::models::{LayoutBlock, LayoutProfile};
 
     fn memory_store() -> LibraryStore {
@@ -1573,5 +2047,65 @@ mod tests {
         let loaded = store.load_layout("Studio".to_string()).unwrap();
 
         assert_eq!(loaded, Some(profile));
+    }
+
+    #[test]
+    fn p2p_share_registry_excludes_revoked_items() {
+        let store = memory_store();
+        let track_id = insert_track(&store, "C:/music/a.flac");
+        let share = store
+            .create_p2p_share(P2pShareDraft {
+                scope: "track".to_string(),
+                track_id: Some(track_id),
+                playlist_id: None,
+                title: "Signal Bloom".to_string(),
+                artist: Some("Northline Archive".to_string()),
+                album: Some("Late Focus".to_string()),
+                manifest_hash: "manifest".to_string(),
+                swarm_topic: "topic".to_string(),
+                size_bytes: 10,
+                item_count: 1,
+                ticket: "fuse-share:v1:test".to_string(),
+                files: vec![ShareFileDraft {
+                    track_id: Some(track_id),
+                    file_hash: "abc".to_string(),
+                    local_path: "C:/music/a.flac".to_string(),
+                    title: "Signal Bloom".to_string(),
+                    artist: Some("Northline Archive".to_string()),
+                    album: Some("Late Focus".to_string()),
+                    format: "FLAC".to_string(),
+                    size_bytes: 10,
+                }],
+            })
+            .unwrap();
+
+        assert_eq!(store.list_active_provider_files().unwrap().len(), 1);
+
+        store.revoke_p2p_share(share.id).unwrap();
+
+        assert!(store.list_active_provider_files().unwrap().is_empty());
+    }
+
+    #[test]
+    fn p2p_settings_round_trip_with_default_import_dir() {
+        let store = memory_store();
+        let settings = store.get_p2p_settings().unwrap();
+
+        assert!(!settings.enabled);
+        assert!(settings.import_dir.is_none());
+
+        let saved = store
+            .save_p2p_settings(P2pSettings {
+                enabled: true,
+                auto_seed_downloads: false,
+                import_dir: Some("C:/Fuse/Swarm".to_string()),
+                upload_limit_kbps: Some(128),
+                download_limit_kbps: Some(256),
+            })
+            .unwrap();
+
+        assert!(saved.enabled);
+        assert!(!saved.auto_seed_downloads);
+        assert_eq!(store.get_p2p_settings().unwrap().upload_limit_kbps, Some(128));
     }
 }

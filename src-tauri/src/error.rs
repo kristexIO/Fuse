@@ -12,6 +12,8 @@ pub enum FuseError {
     Metadata(String),
     #[error("playback error: {0}")]
     Playback(String),
+    #[error("p2p error: {0}")]
+    P2p(String),
     #[error("validation error: {0}")]
     Validation(String),
     #[error("app path error: {0}")]

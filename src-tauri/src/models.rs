@@ -123,6 +123,168 @@ pub struct AppSettings {
     pub active_layout: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSource {
+    pub node_id: String,
+    pub addr: serde_json::Value,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareTicketItem {
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub format: String,
+    pub file_hash: String,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareTicketDisplay {
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub item_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FuseShareTicket {
+    pub version: u8,
+    pub scope: String,
+    pub manifest_hash: String,
+    pub swarm_topic: String,
+    pub providers: Vec<PeerSource>,
+    pub display: ShareTicketDisplay,
+    pub items: Vec<ShareTicketItem>,
+    pub size_bytes: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedItem {
+    pub id: i64,
+    pub scope: String,
+    pub track_id: Option<i64>,
+    pub playlist_id: Option<i64>,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub manifest_hash: String,
+    pub swarm_topic: String,
+    pub size_bytes: i64,
+    pub item_count: i64,
+    pub ticket: String,
+    pub state: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub revoked_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferTask {
+    pub id: i64,
+    pub direction: String,
+    pub status: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub manifest_hash: String,
+    pub swarm_topic: String,
+    pub size_bytes: i64,
+    pub downloaded_bytes: i64,
+    pub peer_count: i64,
+    pub ticket: String,
+    pub output_path: Option<String>,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub finished_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct P2pSettings {
+    pub enabled: bool,
+    pub auto_seed_downloads: bool,
+    pub import_dir: Option<String>,
+    pub upload_limit_kbps: Option<i64>,
+    pub download_limit_kbps: Option<i64>,
+}
+
+impl Default for P2pSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_seed_downloads: true,
+            import_dir: None,
+            upload_limit_kbps: None,
+            download_limit_kbps: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct P2pStatus {
+    pub enabled: bool,
+    pub running: bool,
+    pub node_id: Option<String>,
+    pub node_addr: Option<serde_json::Value>,
+    pub active_shares: i64,
+    pub active_downloads: i64,
+    pub auto_seed_downloads: bool,
+    pub import_dir: Option<String>,
+    pub upload_limit_kbps: Option<i64>,
+    pub download_limit_kbps: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SharedProviderFile {
+    pub file_hash: String,
+    pub path: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub format: String,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShareFileDraft {
+    pub track_id: Option<i64>,
+    pub file_hash: String,
+    pub local_path: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub format: String,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct P2pShareDraft {
+    pub scope: String,
+    pub track_id: Option<i64>,
+    pub playlist_id: Option<i64>,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub manifest_hash: String,
+    pub swarm_topic: String,
+    pub size_bytes: i64,
+    pub item_count: i64,
+    pub ticket: String,
+    pub files: Vec<ShareFileDraft>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaybackQueueItem {

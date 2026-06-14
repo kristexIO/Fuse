@@ -1,9 +1,11 @@
 mod commands;
 mod error;
 mod models;
+mod p2p;
 mod playback;
 mod store;
 
+use crate::p2p::P2pService;
 use crate::playback::PlaybackEngine;
 use crate::store::LibraryStore;
 use std::error::Error;
@@ -13,6 +15,7 @@ use tauri::Manager;
 pub struct AppState {
     pub store: Mutex<LibraryStore>,
     pub playback: Mutex<PlaybackEngine>,
+    pub p2p: Mutex<P2pService>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,12 +30,15 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|error| boxed_error(error.to_string()))?;
-            let store =
-                LibraryStore::new(app_data_dir).map_err(|error| boxed_error(error.to_string()))?;
+            let store = LibraryStore::new(app_data_dir.clone())
+                .map_err(|error| boxed_error(error.to_string()))?;
+            let p2p = P2pService::new(app_data_dir)
+                .map_err(|error| boxed_error(error.to_string()))?;
 
             app.manage(AppState {
                 store: Mutex::new(store),
                 playback: Mutex::new(PlaybackEngine::new()),
+                p2p: Mutex::new(p2p),
             });
 
             Ok(())
@@ -73,7 +79,23 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::save_layout,
-            commands::load_layout
+            commands::load_layout,
+            commands::get_p2p_status,
+            commands::start_p2p,
+            commands::stop_p2p,
+            commands::get_p2p_settings,
+            commands::save_p2p_settings,
+            commands::create_track_share_ticket,
+            commands::create_playlist_share_ticket,
+            commands::list_p2p_shares,
+            commands::pause_p2p_share,
+            commands::resume_p2p_share,
+            commands::revoke_p2p_share,
+            commands::preview_share_ticket,
+            commands::start_download_from_ticket,
+            commands::list_p2p_transfers,
+            commands::cancel_p2p_transfer,
+            commands::retry_p2p_transfer
         ])
         .run(tauri::generate_context!())
         .expect("error while running Fuse");

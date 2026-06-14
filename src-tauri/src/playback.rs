@@ -63,11 +63,11 @@ impl PlaybackEngine {
         start_index: Option<usize>,
     ) -> FuseResult<PlaybackState> {
         self.queue = queue;
-        self.queue_index = self
-            .queue
-            .is_empty()
-            .then_some(None)
-            .unwrap_or_else(|| Some(start_index.unwrap_or_default().min(self.queue.len() - 1)));
+        self.queue_index = if self.queue.is_empty() {
+            None
+        } else {
+            Some(start_index.unwrap_or_default().min(self.queue.len() - 1))
+        };
         self.error = None;
 
         if self.queue.is_empty() {

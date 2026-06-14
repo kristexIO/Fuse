@@ -5,17 +5,22 @@ import type {
   AppDiagnostics,
   AppSettings,
   Artwork,
+  FuseShareTicket,
   Artist,
   LayoutProfile,
   LibraryFolder,
   LibrarySnapshot,
+  P2pSettings,
+  P2pStatus,
   Playlist,
   PlaybackState,
   ScanJob,
   ScanOptions,
   ScanSummary,
+  SharedItem,
   Track,
   TrackQuery,
+  TransferTask,
 } from "../types";
 
 let mockTracks: Track[] = [
@@ -114,6 +119,16 @@ let mockPlaylists: Playlist[] = [
 ];
 
 let mockFolders: LibraryFolder[] = [];
+let mockP2pRunning = false;
+let mockP2pSettings: P2pSettings = {
+  enabled: false,
+  autoSeedDownloads: true,
+  importDir: null,
+  uploadLimitKbps: null,
+  downloadLimitKbps: null,
+};
+let mockP2pShares: SharedItem[] = [];
+let mockP2pTransfers: TransferTask[] = [];
 
 const mockPlaylistTrackIds = new Map<number, number[]>([
   [1, [1, 3]],
@@ -197,6 +212,14 @@ export async function startScan(paths: string[], options?: ScanOptions): Promise
   return invoke<ScanJob>("start_scan", { paths, options: options ?? null });
 }
 
+export async function cancelScan(jobId: number): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    return false;
+  }
+
+  return invoke<boolean>("cancel_scan", { jobId });
+}
+
 export async function getLibraryFolders(): Promise<LibraryFolder[]> {
   if (!isTauriRuntime()) {
     return mockFolders;
@@ -265,6 +288,179 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   }
 
   await invoke("save_settings", { settings });
+}
+
+export async function getP2pStatus(): Promise<P2pStatus> {
+  if (!isTauriRuntime()) {
+    return {
+      ...mockP2pSettings,
+      running: mockP2pRunning,
+      nodeId: mockP2pRunning ? "preview-node" : null,
+      nodeAddr: null,
+      activeShares: mockP2pShares.filter((share) => share.state === "active").length,
+      activeDownloads: mockP2pTransfers.filter((transfer) => ["pending", "downloading"].includes(transfer.status)).length,
+      lastError: null,
+    };
+  }
+
+  return invoke<P2pStatus>("get_p2p_status");
+}
+
+export async function getP2pSettings(): Promise<P2pSettings> {
+  if (!isTauriRuntime()) {
+    return mockP2pSettings;
+  }
+
+  return invoke<P2pSettings>("get_p2p_settings");
+}
+
+export async function saveP2pSettings(settings: P2pSettings): Promise<P2pSettings> {
+  if (!isTauriRuntime()) {
+    mockP2pSettings = { ...settings };
+    mockP2pRunning = settings.enabled && mockP2pRunning;
+    return mockP2pSettings;
+  }
+
+  return invoke<P2pSettings>("save_p2p_settings", { settings });
+}
+
+export async function startP2p(): Promise<P2pStatus> {
+  if (!isTauriRuntime()) {
+    mockP2pRunning = true;
+    mockP2pSettings = { ...mockP2pSettings, enabled: true };
+    return getP2pStatus();
+  }
+
+  return invoke<P2pStatus>("start_p2p");
+}
+
+export async function stopP2p(): Promise<P2pStatus> {
+  if (!isTauriRuntime()) {
+    mockP2pRunning = false;
+    mockP2pSettings = { ...mockP2pSettings, enabled: false };
+    return getP2pStatus();
+  }
+
+  return invoke<P2pStatus>("stop_p2p");
+}
+
+export async function createTrackShareTicket(trackId: number): Promise<SharedItem> {
+  if (!isTauriRuntime()) {
+    const track = mockTracks.find((item) => item.id === trackId);
+    if (!track) {
+      throw new Error("Track not found");
+    }
+    const share = mockShareFromTrack(track);
+    mockP2pShares = [share, ...mockP2pShares];
+    mockP2pRunning = true;
+    mockP2pSettings = { ...mockP2pSettings, enabled: true };
+    return share;
+  }
+
+  return invoke<SharedItem>("create_track_share_ticket", { trackId });
+}
+
+export async function createPlaylistShareTicket(playlistId: number): Promise<SharedItem> {
+  if (!isTauriRuntime()) {
+    const playlist = readMockPlaylists().find((item) => item.id === playlistId);
+    if (!playlist) {
+      throw new Error("Playlist not found");
+    }
+    const share = mockShareFromPlaylist(playlist);
+    mockP2pShares = [share, ...mockP2pShares];
+    mockP2pRunning = true;
+    mockP2pSettings = { ...mockP2pSettings, enabled: true };
+    return share;
+  }
+
+  return invoke<SharedItem>("create_playlist_share_ticket", { playlistId });
+}
+
+export async function listP2pShares(): Promise<SharedItem[]> {
+  if (!isTauriRuntime()) {
+    return mockP2pShares;
+  }
+
+  return invoke<SharedItem[]>("list_p2p_shares");
+}
+
+export async function pauseP2pShare(shareId: number): Promise<SharedItem> {
+  if (!isTauriRuntime()) {
+    return updateMockShareState(shareId, "paused");
+  }
+
+  return invoke<SharedItem>("pause_p2p_share", { shareId });
+}
+
+export async function resumeP2pShare(shareId: number): Promise<SharedItem> {
+  if (!isTauriRuntime()) {
+    return updateMockShareState(shareId, "active");
+  }
+
+  return invoke<SharedItem>("resume_p2p_share", { shareId });
+}
+
+export async function revokeP2pShare(shareId: number): Promise<SharedItem> {
+  if (!isTauriRuntime()) {
+    return updateMockShareState(shareId, "revoked", Math.floor(Date.now() / 1000));
+  }
+
+  return invoke<SharedItem>("revoke_p2p_share", { shareId });
+}
+
+export async function previewShareTicket(ticket: string): Promise<FuseShareTicket> {
+  if (!isTauriRuntime()) {
+    if (!ticket.trim().startsWith("fuse-share:v1:")) {
+      throw new Error("Share ticket must start with fuse-share:v1:");
+    }
+    return {
+      version: 1,
+      scope: "track",
+      manifestHash: "preview",
+      swarmTopic: "preview",
+      providers: [{ nodeId: "preview-node", addr: null }],
+      display: { title: "Preview ticket", itemCount: 1 },
+      items: [{ title: "Preview ticket", format: "MP3", fileHash: "preview", sizeBytes: 0 }],
+      sizeBytes: 0,
+      createdAt: Math.floor(Date.now() / 1000),
+    };
+  }
+
+  return invoke<FuseShareTicket>("preview_share_ticket", { ticket });
+}
+
+export async function startDownloadFromTicket(ticket: string): Promise<TransferTask> {
+  if (!isTauriRuntime()) {
+    const task = mockTransferFromTicket(ticket, "completed");
+    mockP2pTransfers = [task, ...mockP2pTransfers];
+    return task;
+  }
+
+  return invoke<TransferTask>("start_download_from_ticket", { ticket });
+}
+
+export async function listP2pTransfers(): Promise<TransferTask[]> {
+  if (!isTauriRuntime()) {
+    return mockP2pTransfers;
+  }
+
+  return invoke<TransferTask[]>("list_p2p_transfers");
+}
+
+export async function cancelP2pTransfer(transferId: number): Promise<TransferTask> {
+  if (!isTauriRuntime()) {
+    return updateMockTransferStatus(transferId, "cancelled");
+  }
+
+  return invoke<TransferTask>("cancel_p2p_transfer", { transferId });
+}
+
+export async function retryP2pTransfer(transferId: number): Promise<TransferTask> {
+  if (!isTauriRuntime()) {
+    return updateMockTransferStatus(transferId, "completed");
+  }
+
+  return invoke<TransferTask>("retry_p2p_transfer", { transferId });
 }
 
 export async function pickMusicFolders(): Promise<string[]> {
@@ -404,7 +600,7 @@ export async function addTracksToPlaylist(playlistId: number, trackIds: number[]
     });
 
     mockPlaylistTrackIds.set(playlistId, next);
-    return readMockPlaylists().find((playlist) => playlist.id === playlistId) ?? createPlaylist("Quick Mix");
+    return readMockPlaylists().find((playlist) => playlist.id === playlistId) ?? createPlaylist("Быстрый микс");
   }
 
   return invoke<Playlist>("add_tracks_to_playlist", { playlistId, trackIds });
@@ -552,6 +748,14 @@ export async function pauseRustPlayback(): Promise<PlaybackState | null> {
   return invoke<PlaybackState>("pause_playback");
 }
 
+export async function stopRustPlayback(): Promise<PlaybackState | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<PlaybackState>("stop_playback");
+}
+
 export async function resumeRustPlayback(): Promise<PlaybackState | null> {
   if (!isTauriRuntime()) {
     return null;
@@ -609,11 +813,111 @@ function readMockPlaylists(): Playlist[] {
     .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
 }
 
+function mockShareFromTrack(track: Track): SharedItem {
+  const now = Math.floor(Date.now() / 1000);
+  const manifestHash = `mock-${track.id}-${now}`;
+
+  return {
+    id: Math.max(0, ...mockP2pShares.map((share) => share.id)) + 1,
+    scope: "track",
+    trackId: track.id,
+    playlistId: null,
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    manifestHash,
+    swarmTopic: `mock-topic-${manifestHash}`,
+    sizeBytes: track.sizeBytes,
+    itemCount: 1,
+    ticket: `fuse-share:v1:preview-${manifestHash}`,
+    state: "active",
+    createdAt: now,
+    updatedAt: now,
+    revokedAt: null,
+  };
+}
+
+function mockShareFromPlaylist(playlist: Playlist): SharedItem {
+  const now = Math.floor(Date.now() / 1000);
+  const manifestHash = `mock-playlist-${playlist.id}-${now}`;
+  const tracks = mockPlaylistTrackIds.get(playlist.id) ?? [];
+
+  return {
+    id: Math.max(0, ...mockP2pShares.map((share) => share.id)) + 1,
+    scope: "playlist",
+    trackId: null,
+    playlistId: playlist.id,
+    title: playlist.name,
+    artist: null,
+    album: null,
+    manifestHash,
+    swarmTopic: `mock-topic-${manifestHash}`,
+    sizeBytes: tracks
+      .map((trackId) => mockTracks.find((track) => track.id === trackId)?.sizeBytes ?? 0)
+      .reduce((total, size) => total + size, 0),
+    itemCount: tracks.length,
+    ticket: `fuse-share:v1:preview-${manifestHash}`,
+    state: "active",
+    createdAt: now,
+    updatedAt: now,
+    revokedAt: null,
+  };
+}
+
+function updateMockShareState(shareId: number, state: string, revokedAt: number | null = null): SharedItem {
+  const share = mockP2pShares.find((item) => item.id === shareId);
+  if (!share) {
+    throw new Error("Share not found");
+  }
+
+  share.state = state;
+  share.updatedAt = Math.floor(Date.now() / 1000);
+  share.revokedAt = revokedAt;
+  mockP2pShares = [...mockP2pShares];
+  return { ...share };
+}
+
+function mockTransferFromTicket(ticket: string, status: string): TransferTask {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    id: Math.max(0, ...mockP2pTransfers.map((transfer) => transfer.id)) + 1,
+    direction: "download",
+    status,
+    title: "Preview download",
+    artist: null,
+    album: null,
+    manifestHash: `mock-transfer-${now}`,
+    swarmTopic: `mock-topic-${now}`,
+    sizeBytes: 0,
+    downloadedBytes: 0,
+    peerCount: 1,
+    ticket,
+    outputPath: null,
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+    finishedAt: status === "completed" ? now : null,
+  };
+}
+
+function updateMockTransferStatus(transferId: number, status: string): TransferTask {
+  const transfer = mockP2pTransfers.find((item) => item.id === transferId);
+  if (!transfer) {
+    throw new Error("Transfer not found");
+  }
+
+  transfer.status = status;
+  transfer.updatedAt = Math.floor(Date.now() / 1000);
+  transfer.finishedAt = ["completed", "cancelled", "failed"].includes(status) ? transfer.updatedAt : null;
+  mockP2pTransfers = [...mockP2pTransfers];
+  return { ...transfer };
+}
+
 function toAlbums(tracks: Track[]): Album[] {
   const byAlbum = new Map<string, Album>();
 
   tracks.forEach((track) => {
-    const name = track.album || "Unknown Album";
+    const name = track.album || "Без альбома";
     const key = `${name}:${track.artist || ""}`;
     const current = byAlbum.get(key) || {
       name,
@@ -631,7 +935,7 @@ function toArtists(tracks: Track[]): Artist[] {
   const byArtist = new Map<string, Artist>();
 
   tracks.forEach((track) => {
-    const name = track.artist || "Unknown Artist";
+    const name = track.artist || "Неизвестный исполнитель";
     const current = byArtist.get(name) || { name, trackCount: 0 };
     current.trackCount += 1;
     byArtist.set(name, current);
