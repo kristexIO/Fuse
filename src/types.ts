@@ -20,6 +20,7 @@ export type ModuleId =
   | "queue"
   | "mixer"
   | "swarm"
+  | "discover"
   | "playlists"
   | "stats";
 
@@ -150,6 +151,46 @@ export interface AppSettings {
   firstRunComplete: boolean;
   reducedMotion: boolean;
   activeLayout?: string | null;
+}
+
+export interface SmartPlaylist {
+  id: string;
+  name: string;
+  description: string;
+  trackCount: number;
+}
+
+export interface LocalSearchResult {
+  query: string;
+  tracks: Track[];
+  albums: Album[];
+  artists: Artist[];
+  playlists: Playlist[];
+}
+
+export interface RecommendedTrack {
+  track: Track;
+  score: number;
+  reason: string;
+}
+
+export interface DuplicateTrackGroup {
+  signature: string;
+  tracks: Track[];
+  sizeBytes: number;
+}
+
+export interface BrokenTrackIssue {
+  track: Track;
+  reason: string;
+}
+
+export interface WorkspaceExport {
+  version: number;
+  settings: AppSettings;
+  p2pSettings: P2pSettings;
+  layouts: LayoutProfile[];
+  exportedAt: number;
 }
 
 export interface PeerSource {

@@ -16,6 +16,7 @@ import {
   RotateCcw,
   Share2,
   Shuffle,
+  Sparkles,
   SkipBack,
   SkipForward,
   Square,
@@ -29,12 +30,17 @@ import {
 import type {
   Album,
   Artist,
+  BrokenTrackIssue,
   CollectionView,
+  DuplicateTrackGroup,
   LibraryFolder,
+  LocalSearchResult,
   P2pStatus,
   Playlist,
+  RecommendedTrack,
   ScanSummary,
   SharedItem,
+  SmartPlaylist,
   Track,
   TransferTask,
 } from "../types";
@@ -58,6 +64,7 @@ interface CollectionPanelProps {
   onViewChange: (view: CollectionView) => void;
   onPlayTrack: (track: Track) => void;
   onAddTrackToPlaylist: (trackId: number) => void;
+  onShareTrack: (trackId: number) => void;
 }
 
 interface NowPlayingPanelProps {
@@ -107,6 +114,7 @@ interface PlaylistsPanelProps {
   onMoveTrack: (trackId: number, direction: -1 | 1) => void;
   onPlayPlaylist: () => void;
   onRenamePlaylist: (name: string, description?: string | null) => void;
+  onSharePlaylist: (playlistId: number) => void;
 }
 
 interface SwarmPanelProps {
@@ -127,8 +135,29 @@ interface SwarmPanelProps {
   onPauseShare: (shareId: number) => void;
   onResumeShare: (shareId: number) => void;
   onRevokeShare: (shareId: number) => void;
+  onPauseTransfer: (transferId: number) => void;
+  onResumeTransfer: (transferId: number) => void;
   onCancelTransfer: (transferId: number) => void;
   onRetryTransfer: (transferId: number) => void;
+}
+
+interface DiscoverPanelProps {
+  smartPlaylists: SmartPlaylist[];
+  smartTracks: Track[];
+  activeSmartId: string;
+  localSearch: LocalSearchResult | null;
+  recommendations: RecommendedTrack[];
+  duplicateGroups: DuplicateTrackGroup[];
+  brokenIssues: BrokenTrackIssue[];
+  currentTrack: Track | null;
+  onSelectSmartPlaylist: (smartId: string) => void;
+  onPlayTrack: (track: Track) => void;
+  onPlaySmartPlaylist: () => void;
+  onCreateRadio: () => void;
+  onExportWorkspace: () => void;
+  onImportWorkspace: () => void;
+  onFindIssues: () => void;
+  onRepairBrokenTrack: (trackId: number) => void;
 }
 
 export function LibraryPanel({ tracks, albums, artists }: Pick<PanelProps, "tracks" | "albums" | "artists">) {
@@ -284,6 +313,7 @@ export function CollectionPanel({
   onViewChange,
   onPlayTrack,
   onAddTrackToPlaylist,
+  onShareTrack,
 }: CollectionPanelProps) {
   return (
     <>
@@ -346,6 +376,15 @@ export function CollectionPanel({
                     type="button"
                   >
                     {alreadyAdded ? <ListMusic size={14} aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
+                  </button>
+                  <button
+                    className="track-action"
+                    disabled={track.isMissing}
+                    onClick={() => onShareTrack(track.id)}
+                    title="РЎРѕР·РґР°С‚СЊ Swarm ticket"
+                    type="button"
+                  >
+                    <Share2 size={14} aria-hidden="true" />
                   </button>
                 </div>
               );
@@ -535,12 +574,15 @@ export function SwarmPanel({
   onPauseShare,
   onResumeShare,
   onRevokeShare,
+  onPauseTransfer,
+  onResumeTransfer,
   onCancelTransfer,
   onRetryTransfer,
 }: SwarmPanelProps) {
   const running = Boolean(p2pStatus?.running);
   const activeShares = shares.filter((share) => share.state === "active");
   const recentTransfers = transfers.slice(0, 4);
+  const activeUploads = activeShares.length;
 
   return (
     <div className="swarm-panel">
@@ -568,6 +610,10 @@ export function SwarmPanel({
           Плейлист
         </button>
       </div>
+
+      <p className="swarm-note">
+        Accountless private tickets. No public catalog, no telemetry. {activeUploads} active upload {activeUploads === 1 ? "slot" : "slots"}.
+      </p>
 
       <div className="ticket-line">
         <Ticket size={15} aria-hidden="true" />
@@ -629,15 +675,30 @@ export function SwarmPanel({
               <div className={`swarm-item is-${transfer.status}`} key={transfer.id}>
                 <div>
                   <strong>{transfer.title}</strong>
-                  <span>{transfer.status} · {formatBytes(transfer.downloadedBytes || transfer.sizeBytes)}</span>
+                  <span>{transferDetailLine(transfer)}</span>
+                  <div
+                    aria-label={`Transfer progress ${transferProgress(transfer)}%`}
+                    className="transfer-progress"
+                    style={{ "--value": `${transferProgress(transfer)}%` } as CSSProperties}
+                  />
                 </div>
                 <div className="swarm-item-actions">
+                  {["pending", "downloading"].includes(transfer.status) && (
+                    <button className="track-action" type="button" title="Пауза" onClick={() => onPauseTransfer(transfer.id)}>
+                      <Pause size={13} aria-hidden="true" />
+                    </button>
+                  )}
+                  {transfer.status === "paused" && (
+                    <button className="track-action play" type="button" title="Возобновить" onClick={() => onResumeTransfer(transfer.id)}>
+                      <Play size={13} aria-hidden="true" />
+                    </button>
+                  )}
                   {transfer.status === "failed" && (
                     <button className="track-action play" type="button" title="Повторить" onClick={() => onRetryTransfer(transfer.id)}>
                       <RotateCcw size={13} aria-hidden="true" />
                     </button>
                   )}
-                  {["pending", "downloading", "failed"].includes(transfer.status) && (
+                  {["pending", "downloading", "paused", "failed"].includes(transfer.status) && (
                     <button className="track-action danger" type="button" title="Отменить" onClick={() => onCancelTransfer(transfer.id)}>
                       <XCircle size={13} aria-hidden="true" />
                     </button>
@@ -649,6 +710,141 @@ export function SwarmPanel({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+export function DiscoverPanel({
+  smartPlaylists,
+  smartTracks,
+  activeSmartId,
+  localSearch,
+  recommendations,
+  duplicateGroups,
+  brokenIssues,
+  currentTrack,
+  onSelectSmartPlaylist,
+  onPlayTrack,
+  onPlaySmartPlaylist,
+  onCreateRadio,
+  onExportWorkspace,
+  onImportWorkspace,
+  onFindIssues,
+  onRepairBrokenTrack,
+}: DiscoverPanelProps) {
+  const visibleSmartTracks = smartTracks.slice(0, 4);
+  const searchTracks = localSearch?.tracks.slice(0, 3) ?? [];
+  const recommendationTracks = recommendations.slice(0, 3);
+  const visibleDuplicateGroups = duplicateGroups.slice(0, 2);
+  const visibleBrokenIssues = brokenIssues.slice(0, 2);
+
+  return (
+    <div className="discover-panel">
+      <div className="discover-toolbar">
+        <div className="segmented compact" role="tablist" aria-label="Smart playlists">
+          {smartPlaylists.slice(0, 6).map((playlist) => (
+            <button
+              aria-selected={activeSmartId === playlist.id}
+              className={activeSmartId === playlist.id ? "is-active" : ""}
+              key={playlist.id}
+              onClick={() => onSelectSmartPlaylist(playlist.id)}
+              role="tab"
+              type="button"
+              title={playlist.description}
+            >
+              {playlist.name}
+            </button>
+          ))}
+        </div>
+        <div className="discover-actions">
+          <button className="track-action play" type="button" title="Play smart playlist" onClick={onPlaySmartPlaylist} disabled={smartTracks.length === 0}>
+            <Play size={13} aria-hidden="true" />
+          </button>
+          <button className="track-action" type="button" title="Play more like this" onClick={onCreateRadio} disabled={!currentTrack}>
+            <Sparkles size={13} aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
+      <div className="discover-grid">
+        <div className="discover-lane">
+          <div className="lane-head">
+            <span>Smart</span>
+            <strong>{smartTracks.length}</strong>
+          </div>
+          {visibleSmartTracks.map((track) => (
+            <button className="mini-result" key={track.id} type="button" onClick={() => onPlayTrack(track)}>
+              <strong>{track.title}</strong>
+              <span>{track.artist || track.album || track.format}</span>
+            </button>
+          ))}
+          {visibleSmartTracks.length === 0 && <div className="empty-state compact">No local tracks match this smart playlist.</div>}
+        </div>
+
+        <div className="discover-lane">
+          <div className="lane-head">
+            <span>Search</span>
+            <strong>{localSearch?.tracks.length ?? 0}</strong>
+          </div>
+          {searchTracks.map((track) => (
+            <button className="mini-result" key={track.id} type="button" onClick={() => onPlayTrack(track)}>
+              <strong>{track.title}</strong>
+              <span>{track.artist || "lyrics/local metadata"}</span>
+            </button>
+          ))}
+          {searchTracks.length === 0 && <div className="empty-state compact">Type in the top search box for fuzzy local results.</div>}
+        </div>
+
+        <div className="discover-lane">
+          <div className="lane-head">
+            <span>Radio</span>
+            <strong>{recommendations.length}</strong>
+          </div>
+          {recommendationTracks.map((item) => (
+            <button className="mini-result" key={item.track.id} type="button" onClick={() => onPlayTrack(item.track)}>
+              <strong>{item.track.title}</strong>
+              <span>{item.reason}</span>
+            </button>
+          ))}
+          {recommendationTracks.length === 0 && <div className="empty-state compact">Pick a track to build an offline radio queue.</div>}
+        </div>
+      </div>
+
+      <div className="maintenance-row">
+        <button className="secondary-btn" type="button" onClick={onFindIssues}>
+          <RotateCcw size={14} aria-hidden="true" />
+          Scan issues
+        </button>
+        <span>{duplicateGroups.length} duplicate groups · {brokenIssues.length} broken paths</span>
+        <button className="track-action" type="button" title="Export workspace" onClick={onExportWorkspace}>
+          <Copy size={13} aria-hidden="true" />
+        </button>
+        <button className="track-action" type="button" title="Import workspace" onClick={onImportWorkspace}>
+          <Download size={13} aria-hidden="true" />
+        </button>
+      </div>
+
+      {(visibleDuplicateGroups.length > 0 || visibleBrokenIssues.length > 0) && (
+        <div className="maintenance-list">
+          {visibleDuplicateGroups.map((group) => (
+            <div className="maintenance-item" key={group.signature}>
+              <strong>{group.tracks.length} duplicates</strong>
+              <span>{group.tracks.map((track) => track.title).join(" / ")}</span>
+            </div>
+          ))}
+          {visibleBrokenIssues.map((issue) => (
+            <div className="maintenance-item" key={issue.track.id}>
+              <div>
+                <strong>{issue.track.title}</strong>
+                <span>{issue.reason}</span>
+              </div>
+              <button className="track-action" type="button" title="Repair path" onClick={() => onRepairBrokenTrack(issue.track.id)}>
+                <Folder size={13} aria-hidden="true" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -691,6 +887,7 @@ export function PlaylistsPanel({
   onMoveTrack,
   onPlayPlaylist,
   onRenamePlaylist,
+  onSharePlaylist,
 }: PlaylistsPanelProps) {
   const activePlaylist = playlists.find((playlist) => playlist.id === activePlaylistId) ?? null;
 
@@ -732,6 +929,9 @@ export function PlaylistsPanel({
               </button>
               <button className="track-action danger" type="button" title="Удалить плейлист" onClick={onDeletePlaylist}>
                 <Trash2 size={14} aria-hidden="true" />
+              </button>
+              <button className="track-action" type="button" title="Создать Swarm ticket" onClick={() => onSharePlaylist(activePlaylist.id)}>
+                <Share2 size={14} aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -889,6 +1089,61 @@ function formatBytes(value: number): string {
   }
 
   return `${amount >= 10 || unitIndex === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function transferProgress(transfer: TransferTask): number {
+  if (transfer.sizeBytes <= 0) {
+    return 0;
+  }
+
+  return Math.min(100, Math.max(0, Math.round((transfer.downloadedBytes / transfer.sizeBytes) * 100)));
+}
+
+function transferDetailLine(transfer: TransferTask): string {
+  const rate = transferRateBytesPerSecond(transfer);
+  const eta = transferEtaSeconds(transfer, rate);
+  return [
+    transfer.status,
+    `${formatBytes(transfer.downloadedBytes)} / ${formatBytes(transfer.sizeBytes)}`,
+    `${transfer.peerCount} peers`,
+    rate > 0 ? `${formatBytes(rate)}/s` : null,
+    eta ? `ETA ${formatEta(eta)}` : null,
+  ].filter(Boolean).join(" · ");
+}
+
+function transferRateBytesPerSecond(transfer: TransferTask): number {
+  if (transfer.downloadedBytes <= 0 || transfer.createdAt <= 0) {
+    return 0;
+  }
+
+  const elapsed = Math.max(1, Math.floor(Date.now() / 1000) - transfer.createdAt);
+  return Math.round(transfer.downloadedBytes / elapsed);
+}
+
+function transferEtaSeconds(transfer: TransferTask, rate: number): number | null {
+  if (rate <= 0 || transfer.status !== "downloading") {
+    return null;
+  }
+
+  const remaining = Math.max(0, transfer.sizeBytes - transfer.downloadedBytes);
+  if (remaining === 0) {
+    return null;
+  }
+
+  return Math.ceil(remaining / rate);
+}
+
+function formatEta(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) {
+    return `${minutes}m ${rest}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
 }
 
 function artworkStyle(artworkUrl?: string | null): CSSProperties | undefined {

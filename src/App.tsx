@@ -21,6 +21,7 @@ import { InspectorPanel } from "./components/InspectorPanel";
 import { ModuleCard } from "./components/ModuleCard";
 import {
   CollectionPanel,
+  DiscoverPanel,
   LibraryPanel,
   MixerPanel,
   NowPlayingPanel,
@@ -37,9 +38,14 @@ import {
   cancelP2pTransfer,
   createPlaylist,
   createPlaylistShareTicket,
+  createRadioQueue,
   createTrackShareTicket,
   deletePlaylist,
+  exportWorkspace,
+  findBrokenTracks,
+  findDuplicateTracks,
   getDiagnostics,
+  getSmartPlaylistTracks,
   getLibraryFolders,
   getLibrarySnapshot,
   getP2pSettings,
@@ -47,6 +53,10 @@ import {
   getPlaylistTracks,
   getRustPlaybackState,
   getTrackArtwork,
+  importWorkspace,
+  listLayoutProfiles,
+  listSmartPlaylists,
+  localSearch,
   markTrackPlayed,
   isTauriRuntime,
   loadLayoutProfile,
@@ -55,10 +65,14 @@ import {
   pickMusicFiles,
   pickMusicFolders,
   playRustQueueIndex,
+  pauseP2pTransfer,
   recordClientError,
+  recommendTracks,
   removeLibraryFolder,
   removeTrackFromPlaylist,
+  repairTrackPath,
   resumeP2pShare,
+  resumeP2pTransfer,
   reorderPlaylistTracks,
   retryP2pTransfer,
   revokeP2pShare,
@@ -94,15 +108,21 @@ import type {
   LayoutProfile,
   LibraryFolder,
   LibrarySnapshot,
+  LocalSearchResult,
   ModuleId,
   P2pSettings,
   P2pStatus,
+  RecommendedTrack,
   ScanJob,
   ScanSummary,
   SharedItem,
+  SmartPlaylist,
   ThemeName,
   Track,
   TransferTask,
+  DuplicateTrackGroup,
+  BrokenTrackIssue,
+  WorkspaceExport,
 } from "./types";
 
 const layoutStorageKey = "fuse.layout.v2";
@@ -133,6 +153,7 @@ const moduleMeta: Record<ModuleId, { title: string; icon: LucideIcon }> = {
   queue: { title: "Очередь", icon: Rows3 },
   mixer: { title: "Форматы", icon: SlidersHorizontal },
   swarm: { title: "Swarm", icon: RadioTower },
+  discover: { title: "Discover", icon: Search },
   playlists: { title: "Плейлисты", icon: FolderPlus },
   stats: { title: "Сводка", icon: BarChart3 },
 };
@@ -157,6 +178,7 @@ function App() {
   const storedPlayback = useMemo(readStoredPlayback, []);
   const previewMode = !isTauriRuntime();
   const [layout, setLayout] = useState<LayoutProfile>(defaultLayout);
+  const [layoutProfiles, setLayoutProfiles] = useState<LayoutProfile[]>([]);
   const [library, setLibrary] = useState<LibrarySnapshot>(emptySnapshot);
   const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>([]);
   const [p2pStatus, setP2pStatus] = useState<P2pStatus | null>(null);
@@ -170,6 +192,13 @@ function App() {
   const [p2pShares, setP2pShares] = useState<SharedItem[]>([]);
   const [p2pTransfers, setP2pTransfers] = useState<TransferTask[]>([]);
   const [shareTicketDraft, setShareTicketDraft] = useState("");
+  const [smartPlaylists, setSmartPlaylists] = useState<SmartPlaylist[]>([]);
+  const [activeSmartId, setActiveSmartId] = useState("lossless");
+  const [smartTracks, setSmartTracks] = useState<Track[]>([]);
+  const [localSearchResult, setLocalSearchResult] = useState<LocalSearchResult | null>(null);
+  const [recommendations, setRecommendations] = useState<RecommendedTrack[]>([]);
+  const [duplicateGroups, setDuplicateGroups] = useState<DuplicateTrackGroup[]>([]);
+  const [brokenIssues, setBrokenIssues] = useState<BrokenTrackIssue[]>([]);
   const [collectionView, setCollectionView] = useState<CollectionView>("tracks");
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [activePlaylistId, setActivePlaylistId] = useState<number | null>(null);
@@ -279,6 +308,15 @@ function App() {
     }
   }, []);
 
+  const refreshLayoutProfiles = useCallback(async () => {
+    try {
+      const profiles = await listLayoutProfiles();
+      setLayoutProfiles(profiles);
+    } catch {
+      setLayoutProfiles([]);
+    }
+  }, []);
+
   useEffect(() => {
     setLayout(normalizeLayout(readJsonStorage<Partial<LayoutProfile> | null>(layoutStorageKey, null)));
 
@@ -297,7 +335,8 @@ function App() {
     void refreshLibraryFolders();
     void refreshDiagnostics();
     void refreshP2p();
-  }, [refreshDiagnostics, refreshLibrary, refreshLibraryFolders, refreshP2p]);
+    void refreshLayoutProfiles();
+  }, [refreshDiagnostics, refreshLayoutProfiles, refreshLibrary, refreshLibraryFolders, refreshP2p]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -306,6 +345,21 @@ function App() {
 
     return () => window.clearTimeout(timeout);
   }, [search, refreshLibrary]);
+
+  useEffect(() => {
+    const hasActiveTransfers = p2pTransfers.some((transfer) =>
+      ["pending", "downloading"].includes(transfer.status),
+    );
+    if (!hasActiveTransfers) {
+      return undefined;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshP2p();
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [p2pTransfers, refreshP2p]);
 
   useEffect(() => {
     localStorage.setItem(layoutStorageKey, JSON.stringify(layout));
@@ -347,6 +401,45 @@ function App() {
   );
 
   const currentArtworkUrl = currentTrack ? artworkUrls[currentTrack.id] ?? null : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    const query = search.trim();
+
+    async function refreshDiscovery() {
+      try {
+        const [playlists, smart, searchResult, recommended] = await Promise.all([
+          listSmartPlaylists(),
+          getSmartPlaylistTracks(activeSmartId, 24),
+          query ? localSearch(query, 12) : Promise.resolve<LocalSearchResult | null>(null),
+          currentTrack ? recommendTracks(currentTrack.id, 12) : Promise.resolve<RecommendedTrack[]>([]),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        setSmartPlaylists(playlists);
+        setSmartTracks(smart);
+        setLocalSearchResult(searchResult);
+        setRecommendations(recommended);
+
+        if (playlists.length > 0 && !playlists.some((playlist) => playlist.id === activeSmartId)) {
+          setActiveSmartId(playlists[0].id);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setBackendStatus(readError(error));
+        }
+      }
+    }
+
+    void refreshDiscovery();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSmartId, currentTrack?.id, library.tracks.length, search]);
 
   useEffect(() => {
     if (!currentTrack) {
@@ -699,6 +792,38 @@ function App() {
     updateLayoutWithTransition((current) => applyPreset(current, name));
   }
 
+  async function saveCurrentLayoutPreset() {
+    const name = window.prompt("Layout preset name", layout.name && layout.name !== "Studio" ? layout.name : "My Fuse");
+    if (!name?.trim()) {
+      return;
+    }
+
+    try {
+      const profile = normalizeLayout({ ...layout, name: name.trim() });
+      await saveLayoutProfile(profile);
+      setLayout(profile);
+      await refreshLayoutProfiles();
+      setBackendStatus(`Layout preset saved: ${profile.name}`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function loadSavedLayoutPreset(name: string) {
+    try {
+      const profile = await loadLayoutProfile(name);
+      if (!profile) {
+        setBackendStatus(`Layout preset not found: ${name}`);
+        return;
+      }
+
+      updateLayoutWithTransition(() => profile);
+      setBackendStatus(`Layout preset loaded: ${profile.name}`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
   function cycleModuleSize(id: ModuleId) {
     updateLayoutWithTransition((current) => {
       const block = getBlock(current, id);
@@ -960,6 +1085,17 @@ function App() {
     }
   }
 
+  async function shareTrack(trackId: number) {
+    try {
+      const share = await createTrackShareTicket(trackId);
+      setShareTicketDraft(share.ticket);
+      await refreshP2p();
+      setBackendStatus(`Ticket создан: ${share.title}`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
   async function shareActivePlaylist() {
     if (!activePlaylist) {
       setBackendStatus("Выберите плейлист для приватной раздачи");
@@ -968,6 +1104,17 @@ function App() {
 
     try {
       const share = await createPlaylistShareTicket(activePlaylist.id);
+      setShareTicketDraft(share.ticket);
+      await refreshP2p();
+      setBackendStatus(`Ticket плейлиста создан: ${share.title}`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function sharePlaylist(playlistId: number) {
+    try {
+      const share = await createPlaylistShareTicket(playlistId);
       setShareTicketDraft(share.ticket);
       await refreshP2p();
       setBackendStatus(`Ticket плейлиста создан: ${share.title}`);
@@ -1039,6 +1186,26 @@ function App() {
       await cancelP2pTransfer(transferId);
       await refreshP2p();
     } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function pauseTransfer(transferId: number) {
+    try {
+      await pauseP2pTransfer(transferId);
+      await refreshP2p();
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function resumeTransfer(transferId: number) {
+    try {
+      await resumeP2pTransfer(transferId);
+      await refreshLibrary(search);
+      await refreshP2p();
+    } catch (error) {
+      await refreshP2p();
       setBackendStatus(readError(error));
     }
   }
@@ -1177,6 +1344,114 @@ function App() {
     }
 
     playTrack(source[0], source);
+  }
+
+  function playSmartPlaylist() {
+    if (smartTracks.length === 0) {
+      setBackendStatus("Smart playlist is empty for the current local library");
+      return;
+    }
+
+    playTrack(smartTracks[0], smartTracks);
+    setBackendStatus(`Smart playlist queued: ${smartPlaylists.find((item) => item.id === activeSmartId)?.name ?? activeSmartId}`);
+  }
+
+  async function createLocalRadio() {
+    if (!currentTrack) {
+      setBackendStatus("Pick a track before building local radio");
+      return;
+    }
+
+    const radioQueue = [
+      currentTrack,
+      ...recommendations.map((item) => item.track).filter((track) => track.id !== currentTrack.id),
+    ];
+
+    try {
+      if (isTauriRuntime()) {
+        await createRadioQueue(currentTrack.id, 25);
+      }
+
+      playTrack(currentTrack, radioQueue.length > 1 ? radioQueue : effectiveQueue);
+      setBackendStatus(`Local radio queued from: ${currentTrack.title}`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function findLibraryIssues() {
+    try {
+      const [duplicates, broken] = await Promise.all([
+        findDuplicateTracks(),
+        findBrokenTracks(),
+      ]);
+      setDuplicateGroups(duplicates);
+      setBrokenIssues(broken);
+      setBackendStatus(`Library check: ${duplicates.length} duplicate groups, ${broken.length} broken paths`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function repairBrokenTrack(trackId: number) {
+    if (previewMode) {
+      setBackendStatus("Broken file repair is available in the desktop app");
+      return;
+    }
+
+    try {
+      const [replacement] = await pickMusicFiles();
+      if (!replacement) {
+        return;
+      }
+
+      const updated = await repairTrackPath(trackId, replacement);
+      replaceTrack(updated);
+      await refreshLibrary(search);
+      await findLibraryIssues();
+      setBackendStatus(`Track path repaired: ${updated.title}`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function exportWorkspaceConfig() {
+    try {
+      const bundle = await exportWorkspace();
+      const payload = JSON.stringify(bundle, null, 2);
+      try {
+        await navigator.clipboard.writeText(payload);
+        setBackendStatus("Workspace export copied to clipboard");
+      } catch {
+        window.prompt("Fuse workspace export JSON", payload);
+        setBackendStatus("Workspace export is ready");
+      }
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
+  }
+
+  async function importWorkspaceConfig() {
+    const payload = window.prompt("Paste Fuse workspace JSON");
+    if (!payload?.trim()) {
+      return;
+    }
+
+    try {
+      const bundle = JSON.parse(payload) as WorkspaceExport;
+      const imported = await importWorkspace(bundle);
+      const preferred = imported.layouts.find((profile) => profile.name === imported.settings.activeLayout)
+        ?? imported.layouts[0];
+
+      if (preferred) {
+        setLayout(normalizeLayout(preferred));
+      }
+
+      await refreshP2p();
+      setBackendStatus(`Workspace imported: ${imported.layouts.length} layout profiles`);
+    } catch (error) {
+      setBackendStatus(readError(error));
+    }
   }
 
   function togglePlayback() {
@@ -1495,6 +1770,7 @@ function App() {
             onViewChange={setCollectionView}
             onPlayTrack={(track) => playTrack(track, library.tracks)}
             onAddTrackToPlaylist={addTrackToActivePlaylist}
+            onShareTrack={shareTrack}
           />
         );
       case "player":
@@ -1551,8 +1827,31 @@ function App() {
             onPauseShare={pauseShare}
             onResumeShare={resumeShare}
             onRevokeShare={revokeShare}
+            onPauseTransfer={pauseTransfer}
+            onResumeTransfer={resumeTransfer}
             onCancelTransfer={cancelTransfer}
             onRetryTransfer={retryTransfer}
+          />
+        );
+      case "discover":
+        return (
+          <DiscoverPanel
+            smartPlaylists={smartPlaylists}
+            activeSmartId={activeSmartId}
+            smartTracks={smartTracks}
+            localSearch={localSearchResult}
+            recommendations={recommendations}
+            duplicateGroups={duplicateGroups}
+            brokenIssues={brokenIssues}
+            currentTrack={currentTrack}
+            onSelectSmartPlaylist={setActiveSmartId}
+            onPlaySmartPlaylist={playSmartPlaylist}
+            onPlayTrack={(track) => playTrack(track, library.tracks)}
+            onCreateRadio={createLocalRadio}
+            onFindIssues={findLibraryIssues}
+            onRepairBrokenTrack={repairBrokenTrack}
+            onExportWorkspace={exportWorkspaceConfig}
+            onImportWorkspace={importWorkspaceConfig}
           />
         );
       case "playlists":
@@ -1568,6 +1867,7 @@ function App() {
             onMoveTrack={moveTrackInActivePlaylist}
             onPlayPlaylist={playPlaylist}
             onRenamePlaylist={renameActivePlaylist}
+            onSharePlaylist={sharePlaylist}
           />
         );
       case "stats":
@@ -1716,6 +2016,7 @@ function App() {
             artworkUrl={currentArtworkUrl}
             currentTrack={currentTrack}
             layout={layout}
+            layoutProfiles={layoutProfiles}
             libraryFolders={libraryFolders}
             p2pSettings={p2pSettings}
             p2pStatus={p2pStatus}
@@ -1730,6 +2031,8 @@ function App() {
             onThemeChange={setTheme}
             onDensityChange={setDensity}
             onPreset={applyLayoutPreset}
+            onSavePreset={saveCurrentLayoutPreset}
+            onLoadSavedPreset={loadSavedLayoutPreset}
             onToggleModule={toggleModule}
             onHideAll={hideAllModules}
             onShowAll={showAllModules}

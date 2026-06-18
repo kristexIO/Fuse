@@ -1,6 +1,6 @@
 [package]
 name = "fuse"
-version = "1.0.0"
+version = "1.1.0-beta.1"
 description = "Offline music library for Windows"
 authors = ["Fuse"]
 edition = "2021"
@@ -37,6 +37,8 @@ iroh-blobs = { version = "0.35", features = ["fs-store"] }
 iroh-gossip = "0.35"
 blake3 = "1"
 hex = "0.4"
+bytes = "1"
+futures-lite = "2"
 
 [dev-dependencies]
 tempfile = "3"

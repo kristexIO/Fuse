@@ -2,6 +2,26 @@
 
 All notable Fuse changes are documented here.
 
+## [1.1.0-beta.1] - 2026-06-18
+
+### Added
+
+- Swarm Beta: optional private P2P sharing with explicit track/playlist tickets, iroh transport, private gossip provider discovery, and no public catalog.
+- Swarm transfer controls for pause, resume, cancel, retry, progress, peer count, speed, ETA, upload/download limits, partial `.part` resume, duplicate-skip by BLAKE3, and optional auto-seeding.
+- Discover block with local smart playlists, fuzzy search across tracks/albums/artists/playlists/lyrics, offline recommendations, and local radio.
+- Import polish with duplicate groups, broken path checks, and repair flow for missing local files.
+- User layout presets, local workspace export/import, and the new movable `discover` block in all layout presets.
+
+### Changed
+
+- GitHub release workflow now marks prerelease tags such as `v1.1.0-beta.1` as GitHub prereleases automatically.
+- README now describes Swarm Beta privacy boundaries and the optional P2P model.
+
+### Release
+
+- Version bumped to `1.1.0-beta.1`.
+- Windows MSI and NSIS setup bundles are produced by `npm run tauri build`.
+
 ## [1.0.0] - 2026-06-10
 
 ### Added

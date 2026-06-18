@@ -5,22 +5,28 @@ import type {
   AppDiagnostics,
   AppSettings,
   Artwork,
+  BrokenTrackIssue,
+  DuplicateTrackGroup,
   FuseShareTicket,
   Artist,
   LayoutProfile,
   LibraryFolder,
   LibrarySnapshot,
+  LocalSearchResult,
   P2pSettings,
   P2pStatus,
   Playlist,
   PlaybackState,
+  RecommendedTrack,
   ScanJob,
   ScanOptions,
   ScanSummary,
   SharedItem,
+  SmartPlaylist,
   Track,
   TrackQuery,
   TransferTask,
+  WorkspaceExport,
 } from "../types";
 
 let mockTracks: Track[] = [
@@ -455,6 +461,22 @@ export async function cancelP2pTransfer(transferId: number): Promise<TransferTas
   return invoke<TransferTask>("cancel_p2p_transfer", { transferId });
 }
 
+export async function pauseP2pTransfer(transferId: number): Promise<TransferTask> {
+  if (!isTauriRuntime()) {
+    return updateMockTransferStatus(transferId, "paused");
+  }
+
+  return invoke<TransferTask>("pause_p2p_transfer", { transferId });
+}
+
+export async function resumeP2pTransfer(transferId: number): Promise<TransferTask> {
+  if (!isTauriRuntime()) {
+    return updateMockTransferStatus(transferId, "completed");
+  }
+
+  return invoke<TransferTask>("resume_p2p_transfer", { transferId });
+}
+
 export async function retryP2pTransfer(transferId: number): Promise<TransferTask> {
   if (!isTauriRuntime()) {
     return updateMockTransferStatus(transferId, "completed");
@@ -802,6 +824,203 @@ export async function saveLayoutProfile(profile: LayoutProfile): Promise<void> {
   }
 
   await invoke("save_layout", { profile });
+}
+
+export async function listLayoutProfiles(): Promise<LayoutProfile[]> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+
+  return invoke<LayoutProfile[]>("list_layout_profiles");
+}
+
+export async function exportWorkspace(): Promise<WorkspaceExport> {
+  if (!isTauriRuntime()) {
+    return {
+      version: 1,
+      settings: { firstRunComplete: true, reducedMotion: false, activeLayout: "Studio" },
+      p2pSettings: mockP2pSettings,
+      layouts: [],
+      exportedAt: Math.floor(Date.now() / 1000),
+    };
+  }
+
+  return invoke<WorkspaceExport>("export_workspace");
+}
+
+export async function importWorkspace(bundle: WorkspaceExport): Promise<WorkspaceExport> {
+  if (!isTauriRuntime()) {
+    mockP2pSettings = { ...bundle.p2pSettings };
+    return { ...bundle, exportedAt: Math.floor(Date.now() / 1000) };
+  }
+
+  return invoke<WorkspaceExport>("import_workspace", { bundle });
+}
+
+export async function listSmartPlaylists(): Promise<SmartPlaylist[]> {
+  if (!isTauriRuntime()) {
+    return mockSmartPlaylists();
+  }
+
+  return invoke<SmartPlaylist[]>("list_smart_playlists");
+}
+
+export async function getSmartPlaylistTracks(smartId: string, limit = 25): Promise<Track[]> {
+  if (!isTauriRuntime()) {
+    return mockSmartPlaylistTracks(smartId).slice(0, limit);
+  }
+
+  return invoke<Track[]>("get_smart_playlist_tracks", { smartId, limit });
+}
+
+export async function localSearch(query: string, limit = 12): Promise<LocalSearchResult> {
+  if (!isTauriRuntime()) {
+    return mockLocalSearch(query, limit);
+  }
+
+  return invoke<LocalSearchResult>("local_search", { query, limit });
+}
+
+export async function recommendTracks(seedTrackId: number, limit = 12): Promise<RecommendedTrack[]> {
+  if (!isTauriRuntime()) {
+    return mockRecommendations(seedTrackId).slice(0, limit);
+  }
+
+  return invoke<RecommendedTrack[]>("recommend_tracks", { seedTrackId, limit });
+}
+
+export async function createRadioQueue(seedTrackId: number, limit = 25): Promise<PlaybackState | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<PlaybackState>("create_radio_queue", { seedTrackId, limit });
+}
+
+export async function findDuplicateTracks(): Promise<DuplicateTrackGroup[]> {
+  if (!isTauriRuntime()) {
+    return mockDuplicateGroups();
+  }
+
+  return invoke<DuplicateTrackGroup[]>("find_duplicate_tracks");
+}
+
+export async function findBrokenTracks(): Promise<BrokenTrackIssue[]> {
+  if (!isTauriRuntime()) {
+    return mockTracks
+      .filter((track) => track.isMissing)
+      .map((track) => ({ track, reason: "File is missing from disk" }));
+  }
+
+  return invoke<BrokenTrackIssue[]>("find_broken_tracks");
+}
+
+export async function repairTrackPath(trackId: number, replacementPath: string): Promise<Track> {
+  if (!isTauriRuntime()) {
+    const track = mockTracks.find((item) => item.id === trackId);
+    if (!track) {
+      throw new Error("Track not found");
+    }
+    track.path = replacementPath;
+    track.isMissing = false;
+    return { ...track };
+  }
+
+  return invoke<Track>("repair_track_path", { trackId, replacementPath });
+}
+
+function mockSmartPlaylists(): SmartPlaylist[] {
+  const definitions = [
+    { id: "lossless", name: "Lossless", description: "FLAC and WAV tracks" },
+    { id: "recent", name: "Recently added", description: "Newest local imports first" },
+    { id: "missing-tags", name: "Needs tags", description: "Tracks with missing metadata" },
+    { id: "favorites", name: "Local favorites", description: "Most played on this device" },
+    { id: "focus", name: "Focus radio", description: "Longer complete tracks" },
+    { id: "quick", name: "Quick plays", description: "Short local tracks" },
+  ];
+  return definitions.map((definition) => ({
+    ...definition,
+    trackCount: mockSmartPlaylistTracks(definition.id).length,
+  }));
+}
+
+function mockSmartPlaylistTracks(smartId: string): Track[] {
+  const tracks = [...mockTracks];
+  switch (smartId) {
+    case "lossless":
+      return tracks.filter((track) => ["FLAC", "WAV", "AIFF", "ALAC"].includes(track.format.toUpperCase()));
+    case "recent":
+      return tracks.filter((track) => !track.isMissing).sort((a, b) => b.dateAdded - a.dateAdded);
+    case "missing-tags":
+      return tracks.filter((track) => track.missingTags || !track.artist || !track.album);
+    case "favorites":
+      return tracks.filter((track) => track.playCount > 0).sort((a, b) => b.playCount - a.playCount);
+    case "focus":
+      return tracks.filter((track) => (track.durationMs ?? 0) >= 180000 && !track.missingTags && !track.isMissing);
+    case "quick":
+      return tracks.filter((track) => (track.durationMs ?? Number.MAX_SAFE_INTEGER) <= 180000 && !track.isMissing);
+    default:
+      return [];
+  }
+}
+
+function mockLocalSearch(query: string, limit: number): LocalSearchResult {
+  const normalized = query.trim().toLowerCase();
+  const matches = (value?: string | null) => Boolean(value?.toLowerCase().includes(normalized));
+  if (!normalized) {
+    return { query, tracks: [], albums: [], artists: [], playlists: [] };
+  }
+  const tracks = mockTracks
+    .filter((track) => [track.title, track.artist, track.album, track.lyrics].some(matches))
+    .slice(0, limit);
+  return {
+    query,
+    tracks,
+    albums: toAlbums(mockTracks).filter((album) => matches(album.name) || matches(album.artist)).slice(0, limit),
+    artists: toArtists(mockTracks).filter((artist) => matches(artist.name)).slice(0, limit),
+    playlists: readMockPlaylists().filter((playlist) => matches(playlist.name) || matches(playlist.description)).slice(0, limit),
+  };
+}
+
+function mockRecommendations(seedTrackId: number): RecommendedTrack[] {
+  const seed = mockTracks.find((track) => track.id === seedTrackId) ?? mockTracks[0];
+  return mockTracks
+    .filter((track) => track.id !== seed.id && !track.isMissing)
+    .map((track) => {
+      let score = 0;
+      const reasons: string[] = [];
+      if (track.artist && track.artist === seed.artist) {
+        score += 45;
+        reasons.push("same artist");
+      }
+      if (track.album && track.album === seed.album) {
+        score += 25;
+        reasons.push("same album");
+      }
+      if (track.format === seed.format) {
+        score += 10;
+        reasons.push("same format");
+      }
+      score += Math.max(1, track.playCount);
+      return { track, score, reason: reasons.join(", ") || "similar local metadata" };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
+function mockDuplicateGroups(): DuplicateTrackGroup[] {
+  const byKey = new Map<string, Track[]>();
+  mockTracks.forEach((track) => {
+    const key = `${track.title.toLowerCase()}|${track.artist ?? ""}|${track.album ?? ""}|${track.durationMs ?? 0}|${track.sizeBytes}`;
+    byKey.set(key, [...(byKey.get(key) ?? []), track]);
+  });
+  return [...byKey.entries()]
+    .filter(([, tracks]) => tracks.length > 1)
+    .map(([signature, tracks]) => ({
+      signature,
+      tracks,
+      sizeBytes: tracks.reduce((sum, track) => sum + track.sizeBytes, 0),
+    }));
 }
 
 function readMockPlaylists(): Playlist[] {

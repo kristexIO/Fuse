@@ -76,6 +76,7 @@ function CollectionHarness() {
       onViewChange={setView}
       onPlayTrack={vi.fn()}
       onAddTrackToPlaylist={vi.fn()}
+      onShareTrack={vi.fn()}
     />
   );
 }
@@ -116,6 +117,7 @@ describe("PlaylistsPanel", () => {
         onMoveTrack={onMoveTrack}
         onPlayPlaylist={vi.fn()}
         onRenamePlaylist={onRenamePlaylist}
+        onSharePlaylist={vi.fn()}
       />,
     );
 
@@ -232,6 +234,8 @@ describe("SwarmPanel", () => {
         onPauseShare={vi.fn()}
         onResumeShare={vi.fn()}
         onRevokeShare={vi.fn()}
+        onPauseTransfer={vi.fn()}
+        onResumeTransfer={vi.fn()}
         onCancelTransfer={vi.fn()}
         onRetryTransfer={vi.fn()}
       />,

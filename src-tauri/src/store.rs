@@ -1,15 +1,18 @@
 use crate::error::{FuseError, FuseResult};
 use crate::models::{
-    Album, AppDiagnostics, AppSettings, Artist, Artwork, EventLog, LayoutProfile, LibraryFolder,
-    P2pSettings, P2pShareDraft, Playlist, ScanError, ScanJob, ScanOptions, ScanSummary,
-    SharedItem, SharedProviderFile, Track, TrackDraft, TrackQuery, TransferTask,
+    Album, AppDiagnostics, AppSettings, Artist, Artwork, BrokenTrackIssue, DuplicateTrackGroup,
+    EventLog, LayoutProfile, LibraryFolder, LocalSearchResult, P2pSettings, P2pShareDraft,
+    Playlist, RecommendedTrack, ScanError, ScanJob, ScanOptions, ScanSummary, SharedItem,
+    SharedProviderFile, SmartPlaylist, Track, TrackDraft, TrackQuery, TransferTask,
+    WorkspaceExport,
 };
 use base64::{engine::general_purpose, Engine as _};
 use lofty::picture::PictureType;
 use lofty::prelude::*;
 use lofty::tag::{ItemKey, Tag};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashSet;
+use std::cmp::Reverse;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -228,9 +231,11 @@ impl LibraryStore {
 
             CREATE TABLE IF NOT EXISTS p2p_peer_events (
                 id INTEGER PRIMARY KEY,
-                level TEXT NOT NULL,
-                message TEXT NOT NULL,
-                peer TEXT,
+                peer_id TEXT,
+                event_type TEXT NOT NULL,
+                share_id INTEGER,
+                transfer_id INTEGER,
+                message TEXT,
                 created_at INTEGER NOT NULL
             );
             "#,
@@ -261,6 +266,15 @@ impl LibraryStore {
         )?;
         ensure_column(&self.conn, "playlists", "description", "TEXT")?;
         ensure_column(&self.conn, "playlists", "artwork_uri", "TEXT")?;
+        ensure_column(&self.conn, "p2p_peer_events", "peer_id", "TEXT")?;
+        ensure_column(
+            &self.conn,
+            "p2p_peer_events",
+            "event_type",
+            "TEXT NOT NULL DEFAULT 'legacy'",
+        )?;
+        ensure_column(&self.conn, "p2p_peer_events", "share_id", "INTEGER")?;
+        ensure_column(&self.conn, "p2p_peer_events", "transfer_id", "INTEGER")?;
         ensure_column(
             &self.conn,
             "playlists",
@@ -1010,6 +1024,291 @@ impl LibraryStore {
             .map_err(FuseError::from)
     }
 
+    pub fn list_layout_profiles(&self) -> FuseResult<Vec<LayoutProfile>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT data FROM layout_profiles ORDER BY updated_at DESC, name ASC",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| {
+            row.map_err(FuseError::from)
+                .and_then(|data| serde_json::from_str(&data).map_err(FuseError::from))
+        })
+        .collect()
+    }
+
+    pub fn export_workspace(&self) -> FuseResult<WorkspaceExport> {
+        Ok(WorkspaceExport {
+            version: 1,
+            settings: self.get_settings()?,
+            p2p_settings: self.get_p2p_settings()?,
+            layouts: self.list_layout_profiles()?,
+            exported_at: now_epoch_seconds(),
+        })
+    }
+
+    pub fn import_workspace(&self, bundle: WorkspaceExport) -> FuseResult<WorkspaceExport> {
+        if bundle.version != 1 {
+            return Err(FuseError::Validation(
+                "Unsupported workspace export version".to_string(),
+            ));
+        }
+        self.save_settings(bundle.settings)?;
+        self.save_p2p_settings(bundle.p2p_settings)?;
+        for layout in bundle.layouts {
+            self.save_layout(layout)?;
+        }
+        self.export_workspace()
+    }
+
+    pub fn list_smart_playlists(&self) -> FuseResult<Vec<SmartPlaylist>> {
+        let definitions = smart_playlist_definitions();
+        definitions
+            .into_iter()
+            .map(|definition| {
+                let count = self.smart_playlist_tracks(definition.id, Some(10_000))?.len() as i64;
+                Ok(SmartPlaylist {
+                    id: definition.id.to_string(),
+                    name: definition.name.to_string(),
+                    description: definition.description.to_string(),
+                    track_count: count,
+                })
+            })
+            .collect()
+    }
+
+    pub fn smart_playlist_tracks(&self, smart_id: &str, limit: Option<usize>) -> FuseResult<Vec<Track>> {
+        let mut tracks = self.get_tracks(Some(TrackQuery {
+            search: None,
+            limit: Some(MAX_TRACK_LIMIT),
+        }))?;
+        tracks.retain(|track| matches_smart_playlist(track, smart_id));
+        sort_smart_playlist_tracks(&mut tracks, smart_id);
+        tracks.truncate(limit.unwrap_or(100).clamp(1, MAX_TRACK_LIMIT));
+        Ok(tracks)
+    }
+
+    pub fn local_search(&self, query: String, limit: Option<usize>) -> FuseResult<LocalSearchResult> {
+        let query = query.trim().to_string();
+        let limit = limit.unwrap_or(12).clamp(1, 50);
+        if query.is_empty() {
+            return Ok(LocalSearchResult {
+                query,
+                tracks: Vec::new(),
+                albums: Vec::new(),
+                artists: Vec::new(),
+                playlists: Vec::new(),
+            });
+        }
+
+        let mut scored_tracks = self
+            .get_tracks(Some(TrackQuery {
+                search: None,
+                limit: Some(MAX_TRACK_LIMIT),
+            }))?
+            .into_iter()
+            .filter_map(|track| {
+                let score = score_track(&track, &query);
+                (score > 0).then_some((score, track))
+            })
+            .collect::<Vec<_>>();
+        scored_tracks.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.title.cmp(&b.1.title)));
+
+        let mut albums = self
+            .get_albums()?
+            .into_iter()
+            .filter_map(|album| {
+                let haystack = format!("{} {}", album.name, album.artist.clone().unwrap_or_default());
+                let score = fuzzy_score(&haystack, &query);
+                (score > 0).then_some((score, album))
+            })
+            .collect::<Vec<_>>();
+        albums.sort_by_key(|item| Reverse(item.0));
+
+        let mut artists = self
+            .get_artists()?
+            .into_iter()
+            .filter_map(|artist| {
+                let score = fuzzy_score(&artist.name, &query);
+                (score > 0).then_some((score, artist))
+            })
+            .collect::<Vec<_>>();
+        artists.sort_by_key(|item| Reverse(item.0));
+
+        let mut playlists = self
+            .get_playlists()?
+            .into_iter()
+            .filter_map(|playlist| {
+                let haystack = format!("{} {}", playlist.name, playlist.description.clone().unwrap_or_default());
+                let score = fuzzy_score(&haystack, &query);
+                (score > 0).then_some((score, playlist))
+            })
+            .collect::<Vec<_>>();
+        playlists.sort_by_key(|item| Reverse(item.0));
+
+        Ok(LocalSearchResult {
+            query,
+            tracks: scored_tracks.into_iter().take(limit).map(|(_, track)| track).collect(),
+            albums: albums.into_iter().take(limit).map(|(_, album)| album).collect(),
+            artists: artists.into_iter().take(limit).map(|(_, artist)| artist).collect(),
+            playlists: playlists.into_iter().take(limit).map(|(_, playlist)| playlist).collect(),
+        })
+    }
+
+    pub fn recommend_tracks(
+        &self,
+        seed_track_id: i64,
+        limit: Option<usize>,
+    ) -> FuseResult<Vec<RecommendedTrack>> {
+        let seed = self.get_track_by_id(seed_track_id)?;
+        let mut recommendations = self
+            .get_tracks(Some(TrackQuery {
+                search: None,
+                limit: Some(MAX_TRACK_LIMIT),
+            }))?
+            .into_iter()
+            .filter(|track| track.id != seed.id && !track.is_missing)
+            .filter_map(|track| {
+                let (score, reason) = recommendation_score(&seed, &track);
+                (score > 0).then_some(RecommendedTrack {
+                    track,
+                    score,
+                    reason,
+                })
+            })
+            .collect::<Vec<_>>();
+        recommendations.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.track.title.cmp(&b.track.title))
+        });
+        recommendations.truncate(limit.unwrap_or(25).clamp(1, 100));
+        Ok(recommendations)
+    }
+
+    pub fn radio_tracks(&self, seed_track_id: i64, limit: Option<usize>) -> FuseResult<Vec<Track>> {
+        Ok(self
+            .recommend_tracks(seed_track_id, limit)?
+            .into_iter()
+            .map(|item| item.track)
+            .collect())
+    }
+
+    pub fn duplicate_track_groups(&self) -> FuseResult<Vec<DuplicateTrackGroup>> {
+        let mut groups: HashMap<String, Vec<Track>> = HashMap::new();
+        for track in self.get_tracks(Some(TrackQuery {
+            search: None,
+            limit: Some(MAX_TRACK_LIMIT),
+        }))? {
+            let key = duplicate_signature(&track);
+            groups.entry(key).or_default().push(track);
+        }
+
+        let mut duplicates = groups
+            .into_iter()
+            .filter_map(|(signature, tracks)| {
+                (tracks.len() > 1).then(|| DuplicateTrackGroup {
+                    size_bytes: tracks.iter().map(|track| track.size_bytes).sum(),
+                    signature,
+                    tracks,
+                })
+            })
+            .collect::<Vec<_>>();
+        duplicates.sort_by_key(|item| Reverse(item.tracks.len()));
+        Ok(duplicates)
+    }
+
+    pub fn broken_track_issues(&self) -> FuseResult<Vec<BrokenTrackIssue>> {
+        Ok(self
+            .get_tracks(Some(TrackQuery {
+                search: None,
+                limit: Some(MAX_TRACK_LIMIT),
+            }))?
+            .into_iter()
+            .filter_map(|track| {
+                let path = Path::new(&track.path);
+                if track.is_missing || !path.exists() {
+                    Some(BrokenTrackIssue {
+                        track,
+                        reason: "File is missing from disk".to_string(),
+                    })
+                } else if path.is_dir() {
+                    Some(BrokenTrackIssue {
+                        track,
+                        reason: "Path points to a folder, not an audio file".to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+
+    pub fn repair_track_path(&self, track_id: i64, replacement_path: String) -> FuseResult<Track> {
+        let path = Path::new(&replacement_path);
+        if !path.exists() || !path.is_file() {
+            return Err(FuseError::Validation(
+                "Replacement path must point to an existing audio file".to_string(),
+            ));
+        }
+        let format = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("audio")
+            .to_ascii_uppercase();
+        let metadata = fs::metadata(path)?;
+        self.conn.execute(
+            r#"
+            UPDATE tracks
+            SET path = ?2,
+                format = ?3,
+                size_bytes = ?4,
+                modified_at = ?5,
+                is_missing = 0,
+                updated_at = ?6
+            WHERE id = ?1
+            "#,
+            params![
+                track_id,
+                replacement_path,
+                format,
+                metadata.len().min(i64::MAX as u64) as i64,
+                file_modified_epoch(&metadata),
+                now_epoch_seconds()
+            ],
+        )?;
+        self.get_track_by_id(track_id)
+    }
+
+    pub fn find_track_by_file_hash(
+        &self,
+        file_hash: &str,
+        size_bytes: i64,
+    ) -> FuseResult<Option<Track>> {
+        if !is_hex_hash(file_hash) || size_bytes <= 0 {
+            return Ok(None);
+        }
+
+        let sql = format!(
+            "SELECT {TRACK_SELECT} FROM tracks WHERE size_bytes = ?1 AND is_missing = 0 ORDER BY id ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![size_bytes], track_from_row)?;
+        for row in rows {
+            let track = row?;
+            let path = Path::new(&track.path);
+            if path.exists()
+                && path.is_file()
+                && crate::p2p::hash_file(path)
+                    .map(|actual| actual == file_hash)
+                    .unwrap_or(false)
+            {
+                return Ok(Some(track));
+            }
+        }
+
+        Ok(None)
+    }
+
     pub fn get_p2p_settings(&self) -> FuseResult<P2pSettings> {
         let data = self
             .conn
@@ -1053,7 +1352,7 @@ impl LibraryStore {
     pub fn count_active_p2p_downloads(&self) -> FuseResult<i64> {
         self.conn
             .query_row(
-                "SELECT COUNT(*) FROM p2p_downloads WHERE status IN ('pending', 'downloading')",
+                "SELECT COUNT(*) FROM p2p_downloads WHERE status IN ('pending', 'downloading', 'paused')",
                 [],
                 |row| row.get(0),
             )
@@ -1217,6 +1516,23 @@ impl LibraryStore {
         self.get_p2p_download(download_id)
     }
 
+    pub fn update_p2p_download_progress(
+        &self,
+        download_id: i64,
+        downloaded_bytes: i64,
+        peer_count: i64,
+    ) -> FuseResult<TransferTask> {
+        self.conn.execute(
+            r#"
+            UPDATE p2p_downloads
+            SET downloaded_bytes = ?2, peer_count = ?3, updated_at = ?4
+            WHERE id = ?1 AND status = 'downloading'
+            "#,
+            params![download_id, downloaded_bytes, peer_count, now_epoch_seconds()],
+        )?;
+        self.get_p2p_download(download_id)
+    }
+
     pub fn finish_p2p_download(
         &self,
         download_id: i64,
@@ -1253,13 +1569,39 @@ impl LibraryStore {
         self.get_p2p_download(download_id)
     }
 
+    pub fn pause_p2p_transfer(&self, download_id: i64) -> FuseResult<TransferTask> {
+        let now = now_epoch_seconds();
+        self.conn.execute(
+            r#"
+            UPDATE p2p_downloads
+            SET status = 'paused', updated_at = ?2
+            WHERE id = ?1 AND status IN ('pending', 'downloading')
+            "#,
+            params![download_id, now],
+        )?;
+        self.get_p2p_download(download_id)
+    }
+
+    pub fn resume_p2p_transfer(&self, download_id: i64) -> FuseResult<TransferTask> {
+        let now = now_epoch_seconds();
+        self.conn.execute(
+            r#"
+            UPDATE p2p_downloads
+            SET status = 'pending', error = NULL, updated_at = ?2, finished_at = NULL
+            WHERE id = ?1 AND status = 'paused'
+            "#,
+            params![download_id, now],
+        )?;
+        self.get_p2p_download(download_id)
+    }
+
     pub fn cancel_p2p_transfer(&self, download_id: i64) -> FuseResult<TransferTask> {
         let now = now_epoch_seconds();
         self.conn.execute(
             r#"
             UPDATE p2p_downloads
             SET status = 'cancelled', updated_at = ?2, finished_at = ?2
-            WHERE id = ?1 AND status IN ('pending', 'downloading', 'failed')
+            WHERE id = ?1 AND status IN ('pending', 'downloading', 'paused', 'failed')
             "#,
             params![download_id, now],
         )?;
@@ -1281,6 +1623,41 @@ impl LibraryStore {
             params![download_id, now_epoch_seconds()],
         )?;
         self.get_p2p_download(download_id)
+    }
+
+    pub fn get_p2p_transfer_status(&self, download_id: i64) -> FuseResult<String> {
+        self.conn
+            .query_row(
+                "SELECT status FROM p2p_downloads WHERE id = ?1",
+                params![download_id],
+                |row| row.get(0),
+            )
+            .map_err(FuseError::from)
+    }
+
+    pub fn record_p2p_peer_event(
+        &self,
+        peer_id: Option<String>,
+        event_type: &str,
+        share_id: Option<i64>,
+        transfer_id: Option<i64>,
+        message: Option<String>,
+    ) -> FuseResult<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO p2p_peer_events (peer_id, event_type, share_id, transfer_id, message, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+            params![
+                peer_id,
+                event_type,
+                share_id,
+                transfer_id,
+                message,
+                now_epoch_seconds()
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn list_p2p_transfers(&self) -> FuseResult<Vec<TransferTask>> {
@@ -1358,6 +1735,206 @@ enum UpsertOutcome {
     Added,
     Updated,
     Unchanged,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SmartPlaylistDefinition {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+}
+
+fn smart_playlist_definitions() -> Vec<SmartPlaylistDefinition> {
+    vec![
+        SmartPlaylistDefinition {
+            id: "lossless",
+            name: "Lossless",
+            description: "FLAC, WAV, AIFF and ALAC tracks",
+        },
+        SmartPlaylistDefinition {
+            id: "recent",
+            name: "Recently added",
+            description: "Newest local imports first",
+        },
+        SmartPlaylistDefinition {
+            id: "missing-tags",
+            name: "Needs tags",
+            description: "Tracks with empty artist, album, or metadata warnings",
+        },
+        SmartPlaylistDefinition {
+            id: "favorites",
+            name: "Local favorites",
+            description: "Tracks with the highest local play count",
+        },
+        SmartPlaylistDefinition {
+            id: "focus",
+            name: "Focus radio",
+            description: "Longer tracks with complete metadata",
+        },
+        SmartPlaylistDefinition {
+            id: "quick",
+            name: "Quick plays",
+            description: "Short tracks for fast queue building",
+        },
+    ]
+}
+
+fn matches_smart_playlist(track: &Track, smart_id: &str) -> bool {
+    match smart_id {
+        "lossless" => is_lossless_format(&track.format),
+        "recent" => !track.is_missing,
+        "missing-tags" => {
+            track.missing_tags
+                || track.artist.as_deref().unwrap_or("").trim().is_empty()
+                || track.album.as_deref().unwrap_or("").trim().is_empty()
+        }
+        "favorites" => track.play_count > 0,
+        "focus" => {
+            track.duration_ms.unwrap_or_default() >= 3 * 60 * 1000
+                && !track.missing_tags
+                && !track.is_missing
+        }
+        "quick" => {
+            let duration = track.duration_ms.unwrap_or(i64::MAX);
+            duration > 0 && duration <= 3 * 60 * 1000 && !track.is_missing
+        }
+        _ => false,
+    }
+}
+
+fn sort_smart_playlist_tracks(tracks: &mut [Track], smart_id: &str) {
+    match smart_id {
+        "recent" => tracks.sort_by_key(|track| Reverse(track.date_added)),
+        "favorites" => tracks.sort_by(|a, b| {
+            b.play_count
+                .cmp(&a.play_count)
+                .then_with(|| b.last_played_at.cmp(&a.last_played_at))
+        }),
+        _ => tracks.sort_by(|a, b| a.title.cmp(&b.title)),
+    }
+}
+
+fn is_lossless_format(format: &str) -> bool {
+    matches!(
+        format.trim_start_matches('.').to_ascii_uppercase().as_str(),
+        "FLAC" | "WAV" | "AIFF" | "AIF" | "ALAC"
+    )
+}
+
+fn score_track(track: &Track, query: &str) -> i64 {
+    let mut score = 0;
+    score += fuzzy_score(&track.title, query) * 4;
+    score += fuzzy_score(track.artist.as_deref().unwrap_or_default(), query) * 3;
+    score += fuzzy_score(track.album.as_deref().unwrap_or_default(), query) * 2;
+    score += fuzzy_score(track.lyrics.as_deref().unwrap_or_default(), query);
+    score
+}
+
+fn fuzzy_score(value: &str, query: &str) -> i64 {
+    let value = normalize_search_text(value);
+    let query = normalize_search_text(query);
+    if value.is_empty() || query.is_empty() {
+        return 0;
+    }
+    if value == query {
+        return 100;
+    }
+    if value.starts_with(&query) {
+        return 80;
+    }
+    if value.contains(&query) {
+        return 60;
+    }
+
+    let mut position = 0;
+    let mut matched = 0;
+    for needle in query.chars() {
+        if let Some(offset) = value[position..].find(needle) {
+            position += offset + needle.len_utf8();
+            matched += 1;
+        } else {
+            return 0;
+        }
+    }
+
+    if matched == query.chars().count() {
+        20 + matched as i64
+    } else {
+        0
+    }
+}
+
+fn normalize_search_text(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_alphanumeric() || ch.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn recommendation_score(seed: &Track, candidate: &Track) -> (i64, String) {
+    let mut score = 0;
+    let mut reasons = Vec::new();
+
+    if same_text(seed.artist.as_deref(), candidate.artist.as_deref()) {
+        score += 45;
+        reasons.push("same artist");
+    }
+    if same_text(seed.album.as_deref(), candidate.album.as_deref()) {
+        score += 25;
+        reasons.push("same album");
+    }
+    if seed.format.eq_ignore_ascii_case(&candidate.format) {
+        score += 10;
+        reasons.push("same format");
+    }
+    if is_lossless_format(&seed.format) && is_lossless_format(&candidate.format) {
+        score += 8;
+        reasons.push("lossless");
+    }
+    if let (Some(a), Some(b)) = (seed.duration_ms, candidate.duration_ms) {
+        let delta = (a - b).abs();
+        if delta <= 30_000 {
+            score += 12;
+            reasons.push("similar length");
+        } else if delta <= 90_000 {
+            score += 6;
+        }
+    }
+    if candidate.play_count > 0 {
+        score += candidate.play_count.min(5);
+    }
+
+    let reason = if reasons.is_empty() {
+        "similar local metadata".to_string()
+    } else {
+        reasons.join(", ")
+    };
+    (score, reason)
+}
+
+fn same_text(left: Option<&str>, right: Option<&str>) -> bool {
+    let left = left.unwrap_or("").trim();
+    let right = right.unwrap_or("").trim();
+    !left.is_empty() && left.eq_ignore_ascii_case(right)
+}
+
+fn duplicate_signature(track: &Track) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        normalize_search_text(&track.title),
+        normalize_search_text(track.artist.as_deref().unwrap_or_default()),
+        normalize_search_text(track.album.as_deref().unwrap_or_default()),
+        track.duration_ms.unwrap_or_default() / 1000,
+        track.size_bytes
+    )
+}
+
+fn is_hex_hash(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn upsert_track(conn: &Connection, draft: &TrackDraft) -> FuseResult<UpsertOutcome> {
@@ -1707,12 +2284,7 @@ fn infer_image_mime_from_bytes(data: &[u8]) -> Option<String> {
 fn read_track_draft(path: &Path) -> FuseResult<TrackDraft> {
     let file_metadata = fs::metadata(path)?;
     let size_bytes = file_metadata.len().min(i64::MAX as u64) as i64;
-    let modified_at = file_metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
-        .unwrap_or_default();
+    let modified_at = file_modified_epoch(&file_metadata);
     let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let format = path
         .extension()
@@ -1756,6 +2328,15 @@ fn read_track_draft(path: &Path) -> FuseResult<TrackDraft> {
         artwork_data: artwork.map(|(_, data)| data),
         lyrics,
     })
+}
+
+fn file_modified_epoch(metadata: &fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or_default()
 }
 
 fn clean_text(value: Option<&str>) -> Option<String> {

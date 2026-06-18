@@ -1,15 +1,18 @@
 use crate::error::{CommandError, CommandResult, FuseError};
 use crate::models::{
-    Album, AppDiagnostics, AppSettings, Artist, Artwork, LayoutProfile, LibraryFolder,
-    P2pSettings, P2pShareDraft, P2pStatus, PlaybackQueueItem, PlaybackState, Playlist, ScanJob,
-    ScanOptions, ScanSummary, ShareFileDraft, ShareTicketDisplay, ShareTicketItem, SharedItem,
-    SharedProviderFile, Track, TrackQuery, TransferTask,
+    Album, AppDiagnostics, AppSettings, Artist, Artwork, BrokenTrackIssue, DuplicateTrackGroup,
+    LayoutProfile, LibraryFolder, LocalSearchResult, P2pSettings, P2pShareDraft, P2pStatus,
+    PlaybackQueueItem, PlaybackState, Playlist, RecommendedTrack, ScanJob, ScanOptions,
+    ScanSummary, ShareFileDraft, ShareTicketDisplay, ShareTicketItem, SharedItem,
+    SharedProviderFile, SmartPlaylist, Track, TrackQuery, TransferTask, WorkspaceExport,
 };
-use crate::p2p::{build_ticket, decode_ticket, encode_ticket, hash_file};
+use crate::p2p::{
+    build_ticket, decode_ticket, encode_ticket, hash_file, DownloadOutcome, TransferControl,
+};
 use crate::AppState;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
 pub fn scan_library(state: State<'_, AppState>, paths: Vec<String>) -> CommandResult<ScanSummary> {
@@ -439,8 +442,150 @@ pub fn load_layout(
 }
 
 #[tauri::command]
+pub fn list_layout_profiles(state: State<'_, AppState>) -> CommandResult<Vec<LayoutProfile>> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.list_layout_profiles().map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn export_workspace(state: State<'_, AppState>) -> CommandResult<WorkspaceExport> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.export_workspace().map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn import_workspace(
+    state: State<'_, AppState>,
+    bundle: WorkspaceExport,
+) -> CommandResult<WorkspaceExport> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.import_workspace(bundle).map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn list_smart_playlists(state: State<'_, AppState>) -> CommandResult<Vec<SmartPlaylist>> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.list_smart_playlists().map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_smart_playlist_tracks(
+    state: State<'_, AppState>,
+    smart_id: String,
+    limit: Option<usize>,
+) -> CommandResult<Vec<Track>> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store
+        .smart_playlist_tracks(&smart_id, limit)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn local_search(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<usize>,
+) -> CommandResult<LocalSearchResult> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.local_search(query, limit).map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn recommend_tracks(
+    state: State<'_, AppState>,
+    seed_track_id: i64,
+    limit: Option<usize>,
+) -> CommandResult<Vec<RecommendedTrack>> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store
+        .recommend_tracks(seed_track_id, limit)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn create_radio_queue(
+    state: State<'_, AppState>,
+    seed_track_id: i64,
+    limit: Option<usize>,
+) -> CommandResult<PlaybackState> {
+    let tracks = {
+        let store = state
+            .store
+            .lock()
+            .map_err(|_| CommandError::from(FuseError::Lock))?;
+        let mut tracks = vec![store.get_track_by_id(seed_track_id).map_err(CommandError::from)?];
+        tracks.extend(
+            store
+                .radio_tracks(seed_track_id, limit)
+                .map_err(CommandError::from)?,
+        );
+        tracks
+    };
+    let queue = tracks.into_iter().map(playback_item_from_track).collect();
+    let mut playback = state
+        .playback
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    playback.set_queue(queue, Some(0)).map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn find_duplicate_tracks(state: State<'_, AppState>) -> CommandResult<Vec<DuplicateTrackGroup>> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.duplicate_track_groups().map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn find_broken_tracks(state: State<'_, AppState>) -> CommandResult<Vec<BrokenTrackIssue>> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store.broken_track_issues().map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn repair_track_path(
+    state: State<'_, AppState>,
+    track_id: i64,
+    replacement_path: String,
+) -> CommandResult<Track> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    store
+        .repair_track_path(track_id, replacement_path)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
 pub fn get_p2p_status(state: State<'_, AppState>) -> CommandResult<P2pStatus> {
-    read_p2p_status(&state)
+    read_p2p_status(state.inner())
 }
 
 #[tauri::command]
@@ -464,23 +609,26 @@ pub fn save_p2p_settings(
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         store.save_p2p_settings(settings).map_err(CommandError::from)?
     };
-    refresh_p2p_registry(&state)?;
+    refresh_p2p_registry(state.inner())?;
     Ok(settings)
 }
 
 #[tauri::command]
 pub fn start_p2p(state: State<'_, AppState>) -> CommandResult<P2pStatus> {
-    let files = {
+    let (files, tickets, upload_limit) = {
         let store = state
             .store
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         let mut settings = store.get_p2p_settings().map_err(CommandError::from)?;
         settings.enabled = true;
-        store.save_p2p_settings(settings).map_err(CommandError::from)?;
-        store
+        let settings = store.save_p2p_settings(settings).map_err(CommandError::from)?;
+        let files = store
             .list_active_provider_files()
-            .map_err(CommandError::from)?
+            .map_err(CommandError::from)?;
+        let tickets = active_share_tickets(store.list_p2p_shares().map_err(CommandError::from)?)
+            .map_err(CommandError::from)?;
+        (files, tickets, settings.upload_limit_kbps)
     };
 
     {
@@ -488,10 +636,13 @@ pub fn start_p2p(state: State<'_, AppState>) -> CommandResult<P2pStatus> {
             .p2p
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
-        p2p.start(files).map_err(CommandError::from)?;
+        p2p.start(files, upload_limit).map_err(CommandError::from)?;
+        p2p.sync_provider_announcements(tickets)
+            .map_err(CommandError::from)?;
     }
+    record_p2p_event(state.inner(), "node_started", None, None, None);
 
-    read_p2p_status(&state)
+    read_p2p_status(state.inner())
 }
 
 #[tauri::command]
@@ -513,8 +664,9 @@ pub fn stop_p2p(state: State<'_, AppState>) -> CommandResult<P2pStatus> {
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         p2p.stop().map_err(CommandError::from)?;
     }
+    record_p2p_event(state.inner(), "node_stopped", None, None, None);
 
-    read_p2p_status(&state)
+    read_p2p_status(state.inner())
 }
 
 #[tauri::command]
@@ -538,7 +690,7 @@ pub fn create_track_share_ticket(
         item_count: 1,
     };
 
-    ensure_p2p_running(&state)?;
+    ensure_p2p_running(state.inner())?;
     let provider = {
         let p2p = state
             .p2p
@@ -581,7 +733,8 @@ pub fn create_track_share_ticket(
             })
             .map_err(CommandError::from)?
     };
-    refresh_p2p_registry(&state)?;
+    refresh_p2p_registry(state.inner())?;
+    record_p2p_event(state.inner(), "share_created", Some(share.id), None, None);
     Ok(share)
 }
 
@@ -630,7 +783,7 @@ pub fn create_playlist_share_ticket(
         item_count: items.len() as i64,
     };
 
-    ensure_p2p_running(&state)?;
+    ensure_p2p_running(state.inner())?;
     let provider = {
         let p2p = state
             .p2p
@@ -677,7 +830,8 @@ pub fn create_playlist_share_ticket(
             })
             .map_err(CommandError::from)?
     };
-    refresh_p2p_registry(&state)?;
+    refresh_p2p_registry(state.inner())?;
+    record_p2p_event(state.inner(), "share_created", Some(share.id), None, None);
     Ok(share)
 }
 
@@ -699,7 +853,8 @@ pub fn pause_p2p_share(state: State<'_, AppState>, share_id: i64) -> CommandResu
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         store.pause_p2p_share(share_id).map_err(CommandError::from)?
     };
-    refresh_p2p_registry(&state)?;
+    refresh_p2p_registry(state.inner())?;
+    record_p2p_event(state.inner(), "share_paused", Some(share.id), None, None);
     Ok(share)
 }
 
@@ -712,7 +867,8 @@ pub fn resume_p2p_share(state: State<'_, AppState>, share_id: i64) -> CommandRes
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         store.resume_p2p_share(share_id).map_err(CommandError::from)?
     };
-    refresh_p2p_registry(&state)?;
+    refresh_p2p_registry(state.inner())?;
+    record_p2p_event(state.inner(), "share_resumed", Some(share.id), None, None);
     Ok(share)
 }
 
@@ -725,7 +881,8 @@ pub fn revoke_p2p_share(state: State<'_, AppState>, share_id: i64) -> CommandRes
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         store.revoke_p2p_share(share_id).map_err(CommandError::from)?
     };
-    refresh_p2p_registry(&state)?;
+    refresh_p2p_registry(state.inner())?;
+    record_p2p_event(state.inner(), "share_revoked", Some(share.id), None, None);
     Ok(share)
 }
 
@@ -740,6 +897,7 @@ pub fn preview_share_ticket(
 #[tauri::command]
 pub fn start_download_from_ticket(
     state: State<'_, AppState>,
+    app: AppHandle,
     ticket: String,
 ) -> CommandResult<TransferTask> {
     let decoded = decode_ticket(&ticket).map_err(CommandError::from)?;
@@ -753,7 +911,9 @@ pub fn start_download_from_ticket(
             .map_err(CommandError::from)?
     };
 
-    run_p2p_download(&state, download.id, ticket, Some(decoded))
+    spawn_p2p_download(app, download.id, ticket, Some(decoded));
+    record_p2p_event(state.inner(), "download_queued", None, Some(download.id), None);
+    Ok(download)
 }
 
 #[tauri::command]
@@ -774,14 +934,55 @@ pub fn cancel_p2p_transfer(
         .store
         .lock()
         .map_err(|_| CommandError::from(FuseError::Lock))?;
-    store
+    let task = store
         .cancel_p2p_transfer(transfer_id)
-        .map_err(CommandError::from)
+        .map_err(CommandError::from)?;
+    drop(store);
+    record_p2p_event(state.inner(), "download_cancelled", None, Some(task.id), None);
+    Ok(task)
+}
+
+#[tauri::command]
+pub fn pause_p2p_transfer(
+    state: State<'_, AppState>,
+    transfer_id: i64,
+) -> CommandResult<TransferTask> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| CommandError::from(FuseError::Lock))?;
+    let task = store
+        .pause_p2p_transfer(transfer_id)
+        .map_err(CommandError::from)?;
+    drop(store);
+    record_p2p_event(state.inner(), "download_paused", None, Some(task.id), None);
+    Ok(task)
+}
+
+#[tauri::command]
+pub fn resume_p2p_transfer(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    transfer_id: i64,
+) -> CommandResult<TransferTask> {
+    let task = {
+        let store = state
+            .store
+            .lock()
+            .map_err(|_| CommandError::from(FuseError::Lock))?;
+        store
+            .resume_p2p_transfer(transfer_id)
+            .map_err(CommandError::from)?
+    };
+    spawn_p2p_download(app, task.id, task.ticket.clone(), None);
+    record_p2p_event(state.inner(), "download_resumed", None, Some(task.id), None);
+    Ok(task)
 }
 
 #[tauri::command]
 pub fn retry_p2p_transfer(
     state: State<'_, AppState>,
+    app: AppHandle,
     transfer_id: i64,
 ) -> CommandResult<TransferTask> {
     let task = {
@@ -791,7 +992,9 @@ pub fn retry_p2p_transfer(
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         store.retry_p2p_transfer(transfer_id).map_err(CommandError::from)?
     };
-    run_p2p_download(&state, task.id, task.ticket.clone(), None)
+    spawn_p2p_download(app, task.id, task.ticket.clone(), None);
+    record_p2p_event(state.inner(), "download_retried", None, Some(task.id), None);
+    Ok(task)
 }
 
 fn playback_item_from_track(track: Track) -> PlaybackQueueItem {
@@ -804,45 +1007,90 @@ fn playback_item_from_track(track: Track) -> PlaybackQueueItem {
     }
 }
 
-fn ensure_p2p_running(state: &State<'_, AppState>) -> CommandResult<()> {
-    let files = {
+fn ensure_p2p_running(state: &AppState) -> CommandResult<()> {
+    let (files, tickets, upload_limit) = {
         let store = state
             .store
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         let mut settings = store.get_p2p_settings().map_err(CommandError::from)?;
         settings.enabled = true;
-        store.save_p2p_settings(settings).map_err(CommandError::from)?;
-        store
+        let settings = store.save_p2p_settings(settings).map_err(CommandError::from)?;
+        let files = store
             .list_active_provider_files()
-            .map_err(CommandError::from)?
+            .map_err(CommandError::from)?;
+        let tickets = active_share_tickets(store.list_p2p_shares().map_err(CommandError::from)?)
+            .map_err(CommandError::from)?;
+        (files, tickets, settings.upload_limit_kbps)
     };
     let mut p2p = state
         .p2p
         .lock()
         .map_err(|_| CommandError::from(FuseError::Lock))?;
-    p2p.start(files).map_err(CommandError::from)?;
+    p2p.start(files, upload_limit).map_err(CommandError::from)?;
+    p2p.sync_provider_announcements(tickets)
+        .map_err(CommandError::from)?;
     Ok(())
 }
 
-fn refresh_p2p_registry(state: &State<'_, AppState>) -> CommandResult<()> {
-    let files = {
+fn refresh_p2p_registry(state: &AppState) -> CommandResult<()> {
+    let (files, tickets, upload_limit) = {
         let store = state
             .store
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
-        store
+        let settings = store.get_p2p_settings().map_err(CommandError::from)?;
+        let files = store
             .list_active_provider_files()
-            .map_err(CommandError::from)?
+            .map_err(CommandError::from)?;
+        let tickets = active_share_tickets(store.list_p2p_shares().map_err(CommandError::from)?)
+            .map_err(CommandError::from)?;
+        (files, tickets, settings.upload_limit_kbps)
     };
     let mut p2p = state
         .p2p
         .lock()
         .map_err(|_| CommandError::from(FuseError::Lock))?;
-    p2p.replace_shared_files(files).map_err(CommandError::from)
+    p2p.set_upload_limit(upload_limit);
+    p2p.replace_shared_files(files).map_err(CommandError::from)?;
+    p2p.sync_provider_announcements(tickets)
+        .map_err(CommandError::from)
 }
 
-fn read_p2p_status(state: &State<'_, AppState>) -> CommandResult<P2pStatus> {
+fn active_share_tickets(
+    shares: Vec<SharedItem>,
+) -> Result<Vec<crate::models::FuseShareTicket>, FuseError> {
+    shares
+        .into_iter()
+        .filter(|share| share.state == "active" && share.revoked_at.is_none())
+        .map(|share| decode_ticket(&share.ticket))
+        .collect()
+}
+
+fn record_p2p_event(
+    state: &AppState,
+    event_type: &str,
+    share_id: Option<i64>,
+    transfer_id: Option<i64>,
+    message: Option<String>,
+) {
+    let peer_id = state
+        .p2p
+        .lock()
+        .ok()
+        .and_then(|p2p| p2p.status().node_id);
+    if let Ok(store) = state.store.lock() {
+        let _ = store.record_p2p_peer_event(
+            peer_id,
+            event_type,
+            share_id,
+            transfer_id,
+            message,
+        );
+    }
+}
+
+fn read_p2p_status(state: &AppState) -> CommandResult<P2pStatus> {
     let (settings, active_shares, active_downloads) = {
         let store = state
             .store
@@ -917,8 +1165,61 @@ fn ticket_item_from_shared_file(file: &SharedProviderFile) -> ShareTicketItem {
     }
 }
 
+fn spawn_p2p_download(
+    app: AppHandle,
+    download_id: i64,
+    ticket: String,
+    decoded: Option<crate::models::FuseShareTicket>,
+) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _ = run_p2p_download(state.inner(), download_id, ticket, decoded);
+    });
+}
+
+fn existing_library_outcome(
+    state: &AppState,
+    decoded: &crate::models::FuseShareTicket,
+) -> CommandResult<Option<DownloadOutcome>> {
+    let mut output_paths = Vec::new();
+    let mut seeded_files = Vec::new();
+
+    for item in &decoded.items {
+        let existing = {
+            let store = state
+                .store
+                .lock()
+                .map_err(|_| CommandError::from(FuseError::Lock))?;
+            store
+                .find_track_by_file_hash(&item.file_hash, item.size_bytes)
+                .map_err(CommandError::from)?
+        };
+
+        let Some(track) = existing else {
+            return Ok(None);
+        };
+
+        output_paths.push(track.path.clone());
+        seeded_files.push(SharedProviderFile {
+            file_hash: item.file_hash.clone(),
+            path: track.path,
+            title: item.title.clone(),
+            artist: item.artist.clone(),
+            album: item.album.clone(),
+            format: item.format.clone(),
+            size_bytes: item.size_bytes,
+        });
+    }
+
+    Ok(Some(DownloadOutcome {
+        output_paths,
+        downloaded_bytes: decoded.size_bytes,
+        seeded_files,
+    }))
+}
+
 fn run_p2p_download(
-    state: &State<'_, AppState>,
+    state: &AppState,
     download_id: i64,
     ticket: String,
     decoded: Option<crate::models::FuseShareTicket>,
@@ -952,12 +1253,40 @@ fn run_p2p_download(
         p2p.default_import_dir()
     };
 
-    let outcome = {
+    let duplicate_outcome = existing_library_outcome(state, &decoded)?;
+    let outcome = if let Some(outcome) = duplicate_outcome {
+        Ok(outcome)
+    } else {
         let mut p2p = state
             .p2p
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
-        p2p.download_ticket(&ticket, &import_dir)
+        p2p.download_ticket(
+            &ticket,
+            &import_dir,
+            settings.download_limit_kbps,
+            |downloaded_bytes, peer_count| {
+                let store = state
+                    .store
+                    .lock()
+                    .map_err(|_| FuseError::Lock)?;
+                store
+                    .update_p2p_download_progress(download_id, downloaded_bytes, peer_count)
+                    .map(|_| ())
+            },
+            || {
+                let store = state
+                    .store
+                    .lock()
+                    .map_err(|_| FuseError::Lock)?;
+                let status = store.get_p2p_transfer_status(download_id)?;
+                Ok(match status.as_str() {
+                    "paused" => TransferControl::Pause,
+                    "cancelled" => TransferControl::Cancel,
+                    _ => TransferControl::Continue,
+                })
+            },
+        )
     };
 
     match outcome {
@@ -967,6 +1296,9 @@ fn run_p2p_download(
             } else {
                 Some(import_dir.to_string_lossy().to_string())
             };
+            if settings.auto_seed_downloads && !outcome.seeded_files.is_empty() {
+                ensure_p2p_running(state)?;
+            }
 
             {
                 let mut store = state
@@ -1022,18 +1354,31 @@ fn run_p2p_download(
                 .store
                 .lock()
                 .map_err(|_| CommandError::from(FuseError::Lock))?;
-            store
+            let task = store
                 .finish_p2p_download(download_id, outcome.downloaded_bytes, output_path)
-                .map_err(CommandError::from)
+                .map_err(CommandError::from)?;
+            drop(store);
+            record_p2p_event(state, "download_completed", None, Some(task.id), None);
+            Ok(task)
         }
         Err(error) => {
             let store = state
                 .store
                 .lock()
                 .map_err(|_| CommandError::from(FuseError::Lock))?;
-            store
-                .fail_p2p_download(download_id, error.to_string())
-                .map_err(CommandError::from)
+            let status = store
+                .get_p2p_transfer_status(download_id)
+                .map_err(CommandError::from)?;
+            if matches!(status.as_str(), "cancelled" | "paused") {
+                store.get_p2p_download(download_id).map_err(CommandError::from)
+            } else {
+                let task = store
+                    .fail_p2p_download(download_id, error.to_string())
+                    .map_err(CommandError::from)?;
+                drop(store);
+                record_p2p_event(state, "download_failed", None, Some(task.id), task.error.clone());
+                Ok(task)
+            }
         }
     }
 }

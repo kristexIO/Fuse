@@ -14,6 +14,7 @@ interface InspectorPanelProps {
   artworkUrl: string | null;
   currentTrack: Track | null;
   layout: LayoutProfile;
+  layoutProfiles: LayoutProfile[];
   libraryFolders: LibraryFolder[];
   p2pSettings: P2pSettings;
   p2pStatus: P2pStatus | null;
@@ -28,6 +29,8 @@ interface InspectorPanelProps {
   onThemeChange: (theme: ThemeName) => void;
   onDensityChange: (density: Density) => void;
   onPreset: (name: string) => void;
+  onSavePreset: () => void;
+  onLoadSavedPreset: (name: string) => void;
   onToggleModule: (id: ModuleId) => void;
   onHideAll: () => void;
   onShowAll: () => void;
@@ -69,6 +72,7 @@ const moduleLabels: Record<ModuleId, string> = {
   queue: "Очередь",
   mixer: "Форматы",
   swarm: "Swarm",
+  discover: "Discover",
   playlists: "Плейлисты",
   stats: "Сводка",
 };
@@ -77,6 +81,7 @@ export function InspectorPanel({
   artworkUrl,
   currentTrack,
   layout,
+  layoutProfiles,
   libraryFolders,
   p2pSettings,
   p2pStatus,
@@ -91,6 +96,8 @@ export function InspectorPanel({
   onThemeChange,
   onDensityChange,
   onPreset,
+  onSavePreset,
+  onLoadSavedPreset,
   onToggleModule,
   onHideAll,
   onShowAll,
@@ -332,6 +339,21 @@ export function InspectorPanel({
             </button>
           ))}
         </div>
+        <div className="preset-toolbar">
+          <button className="secondary-btn" type="button" onClick={onSavePreset}>
+            Save current
+          </button>
+          <span>{layout.name}</span>
+        </div>
+        {layoutProfiles.length > 0 && (
+          <div className="preset-grid saved-presets">
+            {layoutProfiles.slice(0, 6).map((profile) => (
+              <button className="preset-btn" type="button" key={profile.name} onClick={() => onLoadSavedPreset(profile.name)}>
+                {profile.name}
+              </button>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="inspector-section">

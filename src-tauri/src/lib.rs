@@ -80,6 +80,17 @@ pub fn run() {
             commands::save_settings,
             commands::save_layout,
             commands::load_layout,
+            commands::list_layout_profiles,
+            commands::export_workspace,
+            commands::import_workspace,
+            commands::list_smart_playlists,
+            commands::get_smart_playlist_tracks,
+            commands::local_search,
+            commands::recommend_tracks,
+            commands::create_radio_queue,
+            commands::find_duplicate_tracks,
+            commands::find_broken_tracks,
+            commands::repair_track_path,
             commands::get_p2p_status,
             commands::start_p2p,
             commands::stop_p2p,
@@ -95,6 +106,8 @@ pub fn run() {
             commands::start_download_from_ticket,
             commands::list_p2p_transfers,
             commands::cancel_p2p_transfer,
+            commands::pause_p2p_transfer,
+            commands::resume_p2p_transfer,
             commands::retry_p2p_transfer
         ])
         .run(tauri::generate_context!())

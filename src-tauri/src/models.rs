@@ -123,6 +123,58 @@ pub struct AppSettings {
     pub active_layout: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartPlaylist {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub track_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSearchResult {
+    pub query: String,
+    pub tracks: Vec<Track>,
+    pub albums: Vec<Album>,
+    pub artists: Vec<Artist>,
+    pub playlists: Vec<Playlist>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendedTrack {
+    pub track: Track,
+    pub score: i64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateTrackGroup {
+    pub signature: String,
+    pub tracks: Vec<Track>,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokenTrackIssue {
+    pub track: Track,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceExport {
+    pub version: u8,
+    pub settings: AppSettings,
+    pub p2p_settings: P2pSettings,
+    pub layouts: Vec<LayoutProfile>,
+    pub exported_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerSource {
