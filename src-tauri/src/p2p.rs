@@ -840,7 +840,7 @@ where
 
     for provider in providers {
         let node_addr: NodeAddr = serde_json::from_value(provider.addr.clone())?;
-        const MAX_PROVIDER_ATTEMPTS: usize = 8;
+        const MAX_PROVIDER_ATTEMPTS: usize = 4;
 
         for attempt in 0..MAX_PROVIDER_ATTEMPTS {
             match try_download_from_provider(
@@ -860,8 +860,8 @@ where
                     last_error = error.to_string();
                     let _ = tokio::fs::remove_file(part_path).await;
                     if attempt + 1 < MAX_PROVIDER_ATTEMPTS {
-                        let delay = Duration::from_millis(200 * (attempt as u64 + 1));
-                        tokio::time::sleep(delay.min(Duration::from_millis(1_500))).await;
+                        let delay = Duration::from_millis(250 * (attempt as u64 + 1));
+                        tokio::time::sleep(delay).await;
                     }
                 }
             }
@@ -882,13 +882,14 @@ where
     P: FnMut(i64, i64) -> FuseResult<()>,
     C: FnMut() -> FuseResult<TransferControl>,
 {
-    let connection = endpoint
-        .connect(provider, ALPN)
+    let connection =
+        tokio::time::timeout(Duration::from_secs(10), endpoint.connect(provider, ALPN))
+            .await
+            .map_err(|_| FuseError::P2p("provider connection timed out".to_string()))?
+            .map_err(|error| FuseError::P2p(error.to_string()))?;
+    let (mut send, mut recv) = tokio::time::timeout(Duration::from_secs(10), connection.open_bi())
         .await
-        .map_err(|error| FuseError::P2p(error.to_string()))?;
-    let (mut send, mut recv) = connection
-        .open_bi()
-        .await
+        .map_err(|_| FuseError::P2p("provider stream timed out".to_string()))?
         .map_err(|error| FuseError::P2p(error.to_string()))?;
     let resume_from = resume_offset(part_path, item.size_bytes).await?;
     write_header(
@@ -902,7 +903,12 @@ where
     send.finish()
         .map_err(|error| FuseError::P2p(error.to_string()))?;
 
-    let header = read_json_header(&mut recv, HEADER_LIMIT).await?;
+    let header = tokio::time::timeout(
+        Duration::from_secs(10),
+        read_json_header(&mut recv, HEADER_LIMIT),
+    )
+    .await
+    .map_err(|_| FuseError::P2p("provider response timed out".to_string()))??;
     let response: TransferResponseHeader = serde_json::from_str(&header)?;
     if !response.ok {
         return Err(FuseError::P2p(
