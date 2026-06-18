@@ -840,7 +840,7 @@ where
 
     for provider in providers {
         let node_addr: NodeAddr = serde_json::from_value(provider.addr.clone())?;
-        const MAX_PROVIDER_ATTEMPTS: usize = 4;
+        const MAX_PROVIDER_ATTEMPTS: usize = 8;
 
         for attempt in 0..MAX_PROVIDER_ATTEMPTS {
             match try_download_from_provider(
@@ -882,11 +882,10 @@ where
     P: FnMut(i64, i64) -> FuseResult<()>,
     C: FnMut() -> FuseResult<TransferControl>,
 {
-    let connection =
-        tokio::time::timeout(Duration::from_secs(10), endpoint.connect(provider, ALPN))
-            .await
-            .map_err(|_| FuseError::P2p("provider connection timed out".to_string()))?
-            .map_err(|error| FuseError::P2p(error.to_string()))?;
+    let connection = tokio::time::timeout(Duration::from_secs(3), endpoint.connect(provider, ALPN))
+        .await
+        .map_err(|_| FuseError::P2p("provider connection timed out".to_string()))?
+        .map_err(|error| FuseError::P2p(error.to_string()))?;
     let (mut send, mut recv) = tokio::time::timeout(Duration::from_secs(10), connection.open_bi())
         .await
         .map_err(|_| FuseError::P2p("provider stream timed out".to_string()))?
