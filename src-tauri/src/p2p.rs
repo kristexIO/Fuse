@@ -1173,6 +1173,15 @@ mod tests {
 
     static P2P_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn skip_github_actions_p2p_network_test() -> bool {
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            eprintln!("skipping real Iroh P2P network integration on GitHub Actions");
+            true
+        } else {
+            false
+        }
+    }
+
     fn sample_ticket() -> FuseShareTicket {
         build_ticket(
             "track",
@@ -1238,6 +1247,10 @@ mod tests {
 
     #[test]
     fn two_local_nodes_share_and_download_one_track() {
+        if skip_github_actions_p2p_network_test() {
+            return;
+        }
+
         let _guard = P2P_TEST_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -1312,6 +1325,10 @@ mod tests {
 
     #[test]
     fn downloaded_node_can_seed_after_original_provider_stops() {
+        if skip_github_actions_p2p_network_test() {
+            return;
+        }
+
         let _guard = P2P_TEST_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
