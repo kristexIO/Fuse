@@ -1025,9 +1025,9 @@ impl LibraryStore {
     }
 
     pub fn list_layout_profiles(&self) -> FuseResult<Vec<LayoutProfile>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT data FROM layout_profiles ORDER BY updated_at DESC, name ASC",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT data FROM layout_profiles ORDER BY updated_at DESC, name ASC")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.map(|row| {
             row.map_err(FuseError::from)
@@ -1065,7 +1065,9 @@ impl LibraryStore {
         definitions
             .into_iter()
             .map(|definition| {
-                let count = self.smart_playlist_tracks(definition.id, Some(10_000))?.len() as i64;
+                let count = self
+                    .smart_playlist_tracks(definition.id, Some(10_000))?
+                    .len() as i64;
                 Ok(SmartPlaylist {
                     id: definition.id.to_string(),
                     name: definition.name.to_string(),
@@ -1076,7 +1078,11 @@ impl LibraryStore {
             .collect()
     }
 
-    pub fn smart_playlist_tracks(&self, smart_id: &str, limit: Option<usize>) -> FuseResult<Vec<Track>> {
+    pub fn smart_playlist_tracks(
+        &self,
+        smart_id: &str,
+        limit: Option<usize>,
+    ) -> FuseResult<Vec<Track>> {
         let mut tracks = self.get_tracks(Some(TrackQuery {
             search: None,
             limit: Some(MAX_TRACK_LIMIT),
@@ -1087,7 +1093,11 @@ impl LibraryStore {
         Ok(tracks)
     }
 
-    pub fn local_search(&self, query: String, limit: Option<usize>) -> FuseResult<LocalSearchResult> {
+    pub fn local_search(
+        &self,
+        query: String,
+        limit: Option<usize>,
+    ) -> FuseResult<LocalSearchResult> {
         let query = query.trim().to_string();
         let limit = limit.unwrap_or(12).clamp(1, 50);
         if query.is_empty() {
@@ -1117,7 +1127,11 @@ impl LibraryStore {
             .get_albums()?
             .into_iter()
             .filter_map(|album| {
-                let haystack = format!("{} {}", album.name, album.artist.clone().unwrap_or_default());
+                let haystack = format!(
+                    "{} {}",
+                    album.name,
+                    album.artist.clone().unwrap_or_default()
+                );
                 let score = fuzzy_score(&haystack, &query);
                 (score > 0).then_some((score, album))
             })
@@ -1138,7 +1152,11 @@ impl LibraryStore {
             .get_playlists()?
             .into_iter()
             .filter_map(|playlist| {
-                let haystack = format!("{} {}", playlist.name, playlist.description.clone().unwrap_or_default());
+                let haystack = format!(
+                    "{} {}",
+                    playlist.name,
+                    playlist.description.clone().unwrap_or_default()
+                );
                 let score = fuzzy_score(&haystack, &query);
                 (score > 0).then_some((score, playlist))
             })
@@ -1147,10 +1165,26 @@ impl LibraryStore {
 
         Ok(LocalSearchResult {
             query,
-            tracks: scored_tracks.into_iter().take(limit).map(|(_, track)| track).collect(),
-            albums: albums.into_iter().take(limit).map(|(_, album)| album).collect(),
-            artists: artists.into_iter().take(limit).map(|(_, artist)| artist).collect(),
-            playlists: playlists.into_iter().take(limit).map(|(_, playlist)| playlist).collect(),
+            tracks: scored_tracks
+                .into_iter()
+                .take(limit)
+                .map(|(_, track)| track)
+                .collect(),
+            albums: albums
+                .into_iter()
+                .take(limit)
+                .map(|(_, album)| album)
+                .collect(),
+            artists: artists
+                .into_iter()
+                .take(limit)
+                .map(|(_, artist)| artist)
+                .collect(),
+            playlists: playlists
+                .into_iter()
+                .take(limit)
+                .map(|(_, playlist)| playlist)
+                .collect(),
         })
     }
 
@@ -1312,9 +1346,11 @@ impl LibraryStore {
     pub fn get_p2p_settings(&self) -> FuseResult<P2pSettings> {
         let data = self
             .conn
-            .query_row("SELECT value FROM p2p_settings WHERE key = 'p2p'", [], |row| {
-                row.get::<_, String>(0)
-            })
+            .query_row(
+                "SELECT value FROM p2p_settings WHERE key = 'p2p'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
             .optional()?;
 
         let settings = match data {
@@ -1528,7 +1564,12 @@ impl LibraryStore {
             SET downloaded_bytes = ?2, peer_count = ?3, updated_at = ?4
             WHERE id = ?1 AND status = 'downloading'
             "#,
-            params![download_id, downloaded_bytes, peer_count, now_epoch_seconds()],
+            params![
+                download_id,
+                downloaded_bytes,
+                peer_count,
+                now_epoch_seconds()
+            ],
         )?;
         self.get_p2p_download(download_id)
     }
@@ -1719,12 +1760,17 @@ impl LibraryStore {
     }
 
     fn normalize_p2p_settings(&self, mut settings: P2pSettings) -> P2pSettings {
-        if settings.import_dir.as_deref().unwrap_or("").trim().is_empty() {
-            settings.import_dir = self.app_data_dir.as_ref().map(|path| {
-                path.join("swarm-imports")
-                    .to_string_lossy()
-                    .to_string()
-            });
+        if settings
+            .import_dir
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            settings.import_dir = self
+                .app_data_dir
+                .as_ref()
+                .map(|path| path.join("swarm-imports").to_string_lossy().to_string());
         }
         settings
     }
@@ -2093,9 +2139,7 @@ fn shared_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SharedItem>
     })
 }
 
-fn shared_provider_file_from_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<SharedProviderFile> {
+fn shared_provider_file_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SharedProviderFile> {
     Ok(SharedProviderFile {
         file_hash: row.get(0)?,
         path: row.get(1)?,
@@ -2687,6 +2731,9 @@ mod tests {
 
         assert!(saved.enabled);
         assert!(!saved.auto_seed_downloads);
-        assert_eq!(store.get_p2p_settings().unwrap().upload_limit_kbps, Some(128));
+        assert_eq!(
+            store.get_p2p_settings().unwrap().upload_limit_kbps,
+            Some(128)
+        );
     }
 }

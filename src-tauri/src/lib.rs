@@ -32,8 +32,8 @@ pub fn run() {
                 .map_err(|error| boxed_error(error.to_string()))?;
             let store = LibraryStore::new(app_data_dir.clone())
                 .map_err(|error| boxed_error(error.to_string()))?;
-            let p2p = P2pService::new(app_data_dir)
-                .map_err(|error| boxed_error(error.to_string()))?;
+            let p2p =
+                P2pService::new(app_data_dir).map_err(|error| boxed_error(error.to_string()))?;
 
             app.manage(AppState {
                 store: Mutex::new(store),

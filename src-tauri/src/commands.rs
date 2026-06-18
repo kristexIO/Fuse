@@ -534,7 +534,9 @@ pub fn create_radio_queue(
             .store
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
-        let mut tracks = vec![store.get_track_by_id(seed_track_id).map_err(CommandError::from)?];
+        let mut tracks = vec![store
+            .get_track_by_id(seed_track_id)
+            .map_err(CommandError::from)?];
         tracks.extend(
             store
                 .radio_tracks(seed_track_id, limit)
@@ -547,11 +549,15 @@ pub fn create_radio_queue(
         .playback
         .lock()
         .map_err(|_| CommandError::from(FuseError::Lock))?;
-    playback.set_queue(queue, Some(0)).map_err(CommandError::from)
+    playback
+        .set_queue(queue, Some(0))
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
-pub fn find_duplicate_tracks(state: State<'_, AppState>) -> CommandResult<Vec<DuplicateTrackGroup>> {
+pub fn find_duplicate_tracks(
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<DuplicateTrackGroup>> {
     let store = state
         .store
         .lock()
@@ -607,7 +613,9 @@ pub fn save_p2p_settings(
             .store
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
-        store.save_p2p_settings(settings).map_err(CommandError::from)?
+        store
+            .save_p2p_settings(settings)
+            .map_err(CommandError::from)?
     };
     refresh_p2p_registry(state.inner())?;
     Ok(settings)
@@ -622,7 +630,9 @@ pub fn start_p2p(state: State<'_, AppState>) -> CommandResult<P2pStatus> {
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         let mut settings = store.get_p2p_settings().map_err(CommandError::from)?;
         settings.enabled = true;
-        let settings = store.save_p2p_settings(settings).map_err(CommandError::from)?;
+        let settings = store
+            .save_p2p_settings(settings)
+            .map_err(CommandError::from)?;
         let files = store
             .list_active_provider_files()
             .map_err(CommandError::from)?;
@@ -654,7 +664,9 @@ pub fn stop_p2p(state: State<'_, AppState>) -> CommandResult<P2pStatus> {
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         let mut settings = store.get_p2p_settings().map_err(CommandError::from)?;
         settings.enabled = false;
-        store.save_p2p_settings(settings).map_err(CommandError::from)?;
+        store
+            .save_p2p_settings(settings)
+            .map_err(CommandError::from)?;
     }
 
     {
@@ -679,7 +691,9 @@ pub fn create_track_share_ticket(
             .store
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
-        store.get_track_by_id(track_id).map_err(CommandError::from)?
+        store
+            .get_track_by_id(track_id)
+            .map_err(CommandError::from)?
     };
     let file = shared_file_from_track(&track)?;
     let ticket_item = ticket_item_from_shared_file(&file);
@@ -698,8 +712,14 @@ pub fn create_track_share_ticket(
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         p2p.provider().map_err(CommandError::from)?
     };
-    let ticket = build_ticket("track", display, vec![ticket_item], provider, now_epoch_seconds())
-        .map_err(CommandError::from)?;
+    let ticket = build_ticket(
+        "track",
+        display,
+        vec![ticket_item],
+        provider,
+        now_epoch_seconds(),
+    )
+    .map_err(CommandError::from)?;
     let encoded_ticket = encode_ticket(&ticket).map_err(CommandError::from)?;
 
     let share = {
@@ -851,7 +871,9 @@ pub fn pause_p2p_share(state: State<'_, AppState>, share_id: i64) -> CommandResu
             .store
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
-        store.pause_p2p_share(share_id).map_err(CommandError::from)?
+        store
+            .pause_p2p_share(share_id)
+            .map_err(CommandError::from)?
     };
     refresh_p2p_registry(state.inner())?;
     record_p2p_event(state.inner(), "share_paused", Some(share.id), None, None);
@@ -865,7 +887,9 @@ pub fn resume_p2p_share(state: State<'_, AppState>, share_id: i64) -> CommandRes
             .store
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
-        store.resume_p2p_share(share_id).map_err(CommandError::from)?
+        store
+            .resume_p2p_share(share_id)
+            .map_err(CommandError::from)?
     };
     refresh_p2p_registry(state.inner())?;
     record_p2p_event(state.inner(), "share_resumed", Some(share.id), None, None);
@@ -879,7 +903,9 @@ pub fn revoke_p2p_share(state: State<'_, AppState>, share_id: i64) -> CommandRes
             .store
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
-        store.revoke_p2p_share(share_id).map_err(CommandError::from)?
+        store
+            .revoke_p2p_share(share_id)
+            .map_err(CommandError::from)?
     };
     refresh_p2p_registry(state.inner())?;
     record_p2p_event(state.inner(), "share_revoked", Some(share.id), None, None);
@@ -912,7 +938,13 @@ pub fn start_download_from_ticket(
     };
 
     spawn_p2p_download(app, download.id, ticket, Some(decoded));
-    record_p2p_event(state.inner(), "download_queued", None, Some(download.id), None);
+    record_p2p_event(
+        state.inner(),
+        "download_queued",
+        None,
+        Some(download.id),
+        None,
+    );
     Ok(download)
 }
 
@@ -938,7 +970,13 @@ pub fn cancel_p2p_transfer(
         .cancel_p2p_transfer(transfer_id)
         .map_err(CommandError::from)?;
     drop(store);
-    record_p2p_event(state.inner(), "download_cancelled", None, Some(task.id), None);
+    record_p2p_event(
+        state.inner(),
+        "download_cancelled",
+        None,
+        Some(task.id),
+        None,
+    );
     Ok(task)
 }
 
@@ -990,7 +1028,9 @@ pub fn retry_p2p_transfer(
             .store
             .lock()
             .map_err(|_| CommandError::from(FuseError::Lock))?;
-        store.retry_p2p_transfer(transfer_id).map_err(CommandError::from)?
+        store
+            .retry_p2p_transfer(transfer_id)
+            .map_err(CommandError::from)?
     };
     spawn_p2p_download(app, task.id, task.ticket.clone(), None);
     record_p2p_event(state.inner(), "download_retried", None, Some(task.id), None);
@@ -1015,7 +1055,9 @@ fn ensure_p2p_running(state: &AppState) -> CommandResult<()> {
             .map_err(|_| CommandError::from(FuseError::Lock))?;
         let mut settings = store.get_p2p_settings().map_err(CommandError::from)?;
         settings.enabled = true;
-        let settings = store.save_p2p_settings(settings).map_err(CommandError::from)?;
+        let settings = store
+            .save_p2p_settings(settings)
+            .map_err(CommandError::from)?;
         let files = store
             .list_active_provider_files()
             .map_err(CommandError::from)?;
@@ -1052,7 +1094,8 @@ fn refresh_p2p_registry(state: &AppState) -> CommandResult<()> {
         .lock()
         .map_err(|_| CommandError::from(FuseError::Lock))?;
     p2p.set_upload_limit(upload_limit);
-    p2p.replace_shared_files(files).map_err(CommandError::from)?;
+    p2p.replace_shared_files(files)
+        .map_err(CommandError::from)?;
     p2p.sync_provider_announcements(tickets)
         .map_err(CommandError::from)
 }
@@ -1074,19 +1117,9 @@ fn record_p2p_event(
     transfer_id: Option<i64>,
     message: Option<String>,
 ) {
-    let peer_id = state
-        .p2p
-        .lock()
-        .ok()
-        .and_then(|p2p| p2p.status().node_id);
+    let peer_id = state.p2p.lock().ok().and_then(|p2p| p2p.status().node_id);
     if let Ok(store) = state.store.lock() {
-        let _ = store.record_p2p_peer_event(
-            peer_id,
-            event_type,
-            share_id,
-            transfer_id,
-            message,
-        );
+        let _ = store.record_p2p_peer_event(peer_id, event_type, share_id, transfer_id, message);
     }
 }
 
@@ -1266,19 +1299,13 @@ fn run_p2p_download(
             &import_dir,
             settings.download_limit_kbps,
             |downloaded_bytes, peer_count| {
-                let store = state
-                    .store
-                    .lock()
-                    .map_err(|_| FuseError::Lock)?;
+                let store = state.store.lock().map_err(|_| FuseError::Lock)?;
                 store
                     .update_p2p_download_progress(download_id, downloaded_bytes, peer_count)
                     .map(|_| ())
             },
             || {
-                let store = state
-                    .store
-                    .lock()
-                    .map_err(|_| FuseError::Lock)?;
+                let store = state.store.lock().map_err(|_| FuseError::Lock)?;
                 let status = store.get_p2p_transfer_status(download_id)?;
                 Ok(match status.as_str() {
                     "paused" => TransferControl::Pause,
@@ -1370,13 +1397,21 @@ fn run_p2p_download(
                 .get_p2p_transfer_status(download_id)
                 .map_err(CommandError::from)?;
             if matches!(status.as_str(), "cancelled" | "paused") {
-                store.get_p2p_download(download_id).map_err(CommandError::from)
+                store
+                    .get_p2p_download(download_id)
+                    .map_err(CommandError::from)
             } else {
                 let task = store
                     .fail_p2p_download(download_id, error.to_string())
                     .map_err(CommandError::from)?;
                 drop(store);
-                record_p2p_event(state, "download_failed", None, Some(task.id), task.error.clone());
+                record_p2p_event(
+                    state,
+                    "download_failed",
+                    None,
+                    Some(task.id),
+                    task.error.clone(),
+                );
                 Ok(task)
             }
         }

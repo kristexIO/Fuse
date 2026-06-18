@@ -227,10 +227,7 @@ impl P2pService {
         Ok(())
     }
 
-    pub fn sync_provider_announcements(
-        &mut self,
-        tickets: Vec<FuseShareTicket>,
-    ) -> FuseResult<()> {
+    pub fn sync_provider_announcements(&mut self, tickets: Vec<FuseShareTicket>) -> FuseResult<()> {
         let Some(gossip) = self.gossip.clone() else {
             return Ok(());
         };
@@ -250,10 +247,20 @@ impl P2pService {
                 kind: "provider".to_string(),
                 manifest_hash: ticket.manifest_hash,
                 provider: provider.clone(),
-                file_hashes: ticket.items.iter().map(|item| item.file_hash.clone()).collect(),
+                file_hashes: ticket
+                    .items
+                    .iter()
+                    .map(|item| item.file_hash.clone())
+                    .collect(),
                 announced_at: unix_now(),
             };
-            announcements.push((topic_key, TopicAnnouncement { topic, announcement }));
+            announcements.push((
+                topic_key,
+                TopicAnnouncement {
+                    topic,
+                    announcement,
+                },
+            ));
         }
 
         let stale_topics = self
@@ -363,9 +370,10 @@ impl P2pService {
         mut should_cancel: impl FnMut() -> FuseResult<TransferControl>,
     ) -> FuseResult<DownloadOutcome> {
         let ticket = decode_ticket(encoded_ticket)?;
-        let endpoint = self.endpoint.as_ref().ok_or_else(|| {
-            FuseError::P2p("P2P must be running before downloading".to_string())
-        })?;
+        let endpoint = self
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| FuseError::P2p("P2P must be running before downloading".to_string()))?;
         let providers = self.discover_providers(&ticket)?;
         fs::create_dir_all(import_dir)?;
 
@@ -464,29 +472,37 @@ impl P2pService {
 
 pub fn encode_ticket(ticket: &FuseShareTicket) -> FuseResult<String> {
     let payload = serde_json::to_vec(ticket)?;
-    Ok(format!("{TICKET_PREFIX}{}", URL_SAFE_NO_PAD.encode(payload)))
+    Ok(format!(
+        "{TICKET_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(payload)
+    ))
 }
 
 pub fn decode_ticket(value: &str) -> FuseResult<FuseShareTicket> {
-    let payload = value
-        .trim()
-        .strip_prefix(TICKET_PREFIX)
-        .ok_or_else(|| FuseError::Validation("Share ticket must start with fuse-share:v1:".to_string()))?;
+    let payload = value.trim().strip_prefix(TICKET_PREFIX).ok_or_else(|| {
+        FuseError::Validation("Share ticket must start with fuse-share:v1:".to_string())
+    })?;
     let bytes = URL_SAFE_NO_PAD
         .decode(payload)
         .map_err(|error| FuseError::Validation(format!("Malformed share ticket: {error}")))?;
     let ticket: FuseShareTicket = serde_json::from_slice(&bytes)?;
 
     if ticket.version != 1 {
-        return Err(FuseError::Validation("Unsupported share ticket version".to_string()));
+        return Err(FuseError::Validation(
+            "Unsupported share ticket version".to_string(),
+        ));
     }
 
     if ticket.items.is_empty() {
-        return Err(FuseError::Validation("Share ticket has no items".to_string()));
+        return Err(FuseError::Validation(
+            "Share ticket has no items".to_string(),
+        ));
     }
 
     if ticket.providers.is_empty() {
-        return Err(FuseError::Validation("Share ticket has no providers".to_string()));
+        return Err(FuseError::Validation(
+            "Share ticket has no providers".to_string(),
+        ));
     }
 
     validate_ticket(&ticket)?;
@@ -502,13 +518,16 @@ pub fn build_ticket(
     created_at: i64,
 ) -> FuseResult<FuseShareTicket> {
     if items.is_empty() {
-        return Err(FuseError::Validation("Cannot share an empty item list".to_string()));
+        return Err(FuseError::Validation(
+            "Cannot share an empty item list".to_string(),
+        ));
     }
 
     let manifest_hash = manifest_hash(scope, &display, &items)?;
-    let swarm_topic = hex::encode(blake3::hash(
-        format!("fuse-swarm:{scope}:{manifest_hash}:{created_at}").as_bytes(),
-    ).as_bytes());
+    let swarm_topic = hex::encode(
+        blake3::hash(format!("fuse-swarm:{scope}:{manifest_hash}:{created_at}").as_bytes())
+            .as_bytes(),
+    );
     let size_bytes = items.iter().map(|item| item.size_bytes).sum();
 
     Ok(FuseShareTicket {
@@ -554,29 +573,43 @@ fn validate_ticket(ticket: &FuseShareTicket) -> FuseResult<()> {
         return Err(FuseError::Validation("Unsupported share scope".to_string()));
     }
     if !is_hex_hash(&ticket.manifest_hash) || !is_hex_hash(&ticket.swarm_topic) {
-        return Err(FuseError::Validation("Share ticket contains an invalid hash".to_string()));
+        return Err(FuseError::Validation(
+            "Share ticket contains an invalid hash".to_string(),
+        ));
     }
     if ticket.display.item_count != ticket.items.len() as i64 {
-        return Err(FuseError::Validation("Share ticket item count does not match manifest".to_string()));
+        return Err(FuseError::Validation(
+            "Share ticket item count does not match manifest".to_string(),
+        ));
     }
     if ticket.size_bytes <= 0 {
-        return Err(FuseError::Validation("Share ticket has invalid size".to_string()));
+        return Err(FuseError::Validation(
+            "Share ticket has invalid size".to_string(),
+        ));
     }
 
     let item_size = ticket.items.iter().map(|item| item.size_bytes).sum::<i64>();
     if item_size != ticket.size_bytes {
-        return Err(FuseError::Validation("Share ticket size does not match manifest".to_string()));
+        return Err(FuseError::Validation(
+            "Share ticket size does not match manifest".to_string(),
+        ));
     }
 
     for item in &ticket.items {
         if item.title.trim().is_empty() {
-            return Err(FuseError::Validation("Share ticket contains an unnamed item".to_string()));
+            return Err(FuseError::Validation(
+                "Share ticket contains an unnamed item".to_string(),
+            ));
         }
         if !is_hex_hash(&item.file_hash) {
-            return Err(FuseError::Validation("Share ticket contains an invalid file hash".to_string()));
+            return Err(FuseError::Validation(
+                "Share ticket contains an invalid file hash".to_string(),
+            ));
         }
         if item.size_bytes <= 0 {
-            return Err(FuseError::Validation("Share ticket contains an invalid file size".to_string()));
+            return Err(FuseError::Validation(
+                "Share ticket contains an invalid file size".to_string(),
+            ));
         }
         if !is_supported_audio_format(&item.format) {
             return Err(FuseError::Validation(format!(
@@ -603,9 +636,9 @@ fn is_supported_audio_format(value: &str) -> bool {
 fn topic_from_hex(value: &str) -> FuseResult<TopicId> {
     let bytes = hex::decode(value)
         .map_err(|error| FuseError::Validation(format!("Invalid swarm topic: {error}")))?;
-    let topic: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| FuseError::Validation("Swarm topic must be a 32-byte BLAKE3 hash".to_string()))?;
+    let topic: [u8; 32] = bytes.try_into().map_err(|_| {
+        FuseError::Validation("Swarm topic must be a 32-byte BLAKE3 hash".to_string())
+    })?;
     Ok(TopicId::from_bytes(topic))
 }
 
@@ -632,7 +665,11 @@ async fn addressable_node_addr(endpoint: &Endpoint) -> FuseResult<NodeAddr> {
     let home_relay = home_relay
         .get()
         .map_err(|error| FuseError::P2p(error.to_string()))?;
-    Ok(NodeAddr::from_parts(endpoint.node_id(), home_relay, direct_addresses))
+    Ok(NodeAddr::from_parts(
+        endpoint.node_id(),
+        home_relay,
+        direct_addresses,
+    ))
 }
 
 async fn announce_provider_loop(gossip: Gossip, announcement: TopicAnnouncement) {
@@ -803,7 +840,9 @@ where
 
     for provider in providers {
         let node_addr: NodeAddr = serde_json::from_value(provider.addr.clone())?;
-        for attempt in 0..3 {
+        const MAX_PROVIDER_ATTEMPTS: usize = 8;
+
+        for attempt in 0..MAX_PROVIDER_ATTEMPTS {
             match try_download_from_provider(
                 endpoint.clone(),
                 node_addr.clone(),
@@ -815,13 +854,14 @@ where
             {
                 Ok(copied) => return Ok(copied),
                 Err(error) => {
-                    if is_pause_error(&error) {
+                    if is_pause_error(&error) || is_cancel_error(&error) {
                         return Err(error);
                     }
                     last_error = error.to_string();
                     let _ = tokio::fs::remove_file(part_path).await;
-                    if attempt < 2 {
-                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    if attempt + 1 < MAX_PROVIDER_ATTEMPTS {
+                        let delay = Duration::from_millis(200 * (attempt as u64 + 1));
+                        tokio::time::sleep(delay.min(Duration::from_millis(1_500))).await;
                     }
                 }
             }
@@ -883,13 +923,7 @@ where
         .open(part_path)
         .await
         .map_err(|error| FuseError::P2p(error.to_string()))?;
-    let copied = throttled_copy_download(
-        &mut recv,
-        &mut file,
-        control,
-        resume_from,
-    )
-    .await?;
+    let copied = throttled_copy_download(&mut recv, &mut file, control, resume_from).await?;
     connection.close(0_u8.into(), b"done");
     Ok(copied)
 }
@@ -914,7 +948,9 @@ where
         match (control.should_cancel)()? {
             TransferControl::Continue => {}
             TransferControl::Pause => return Err(FuseError::P2p("download paused".to_string())),
-            TransferControl::Cancel => return Err(FuseError::P2p("download cancelled".to_string())),
+            TransferControl::Cancel => {
+                return Err(FuseError::P2p("download cancelled".to_string()))
+            }
         }
 
         let read = reader
@@ -1015,7 +1051,9 @@ where
             .await
             .map_err(|error| FuseError::P2p(error.to_string()))?;
         if read == 0 {
-            return Err(FuseError::P2p("connection closed before header".to_string()));
+            return Err(FuseError::P2p(
+                "connection closed before header".to_string(),
+            ));
         }
         if byte[0] == b'\n' {
             break;
@@ -1032,7 +1070,11 @@ where
 fn unique_output_path(import_dir: &Path, item: &ShareTicketItem) -> FuseResult<PathBuf> {
     let extension = item.format.to_ascii_lowercase();
     let extension = extension.trim_start_matches('.');
-    let extension = if extension.is_empty() { "audio" } else { extension };
+    let extension = if extension.is_empty() {
+        "audio"
+    } else {
+        extension
+    };
     let stem = sanitize_file_name(&item.title);
     let base = if stem.is_empty() {
         item.file_hash.chars().take(12).collect::<String>()
@@ -1057,7 +1099,9 @@ fn unique_output_path(import_dir: &Path, item: &ShareTicketItem) -> FuseResult<P
         }
     }
 
-    Err(FuseError::P2p("Could not choose a unique output path".to_string()))
+    Err(FuseError::P2p(
+        "Could not choose a unique output path".to_string(),
+    ))
 }
 
 fn part_path_for(output_path: &Path) -> PathBuf {
@@ -1097,6 +1141,10 @@ async fn resume_offset(path: &Path, size_bytes: i64) -> FuseResult<u64> {
 
 fn is_pause_error(error: &FuseError) -> bool {
     error.to_string().contains("download paused")
+}
+
+fn is_cancel_error(error: &FuseError) -> bool {
+    error.to_string().contains("download cancelled")
 }
 
 fn sanitize_file_name(value: &str) -> String {
@@ -1185,7 +1233,9 @@ mod tests {
 
     #[test]
     fn two_local_nodes_share_and_download_one_track() {
-        let _guard = P2P_TEST_LOCK.lock().unwrap();
+        let _guard = P2P_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let source_dir = tempdir().unwrap();
         let target_dir = tempdir().unwrap();
         let source_path = source_dir.path().join("signal.flac");
@@ -1235,12 +1285,21 @@ mod tests {
         let mut downloader = P2pService::new(target_dir.path().join("downloader")).unwrap();
         downloader.start(Vec::new(), None).unwrap();
         let outcome = downloader
-            .download_ticket(&encoded, target_dir.path(), None, |_, _| Ok(()), || Ok(TransferControl::Continue))
+            .download_ticket(
+                &encoded,
+                target_dir.path(),
+                None,
+                |_, _| Ok(()),
+                || Ok(TransferControl::Continue),
+            )
             .unwrap();
 
         assert_eq!(outcome.downloaded_bytes, 26);
         assert_eq!(outcome.seeded_files.len(), 1);
-        assert_eq!(fs::read(&outcome.output_paths[0]).unwrap(), b"fuse p2p integration track");
+        assert_eq!(
+            fs::read(&outcome.output_paths[0]).unwrap(),
+            b"fuse p2p integration track"
+        );
 
         downloader.stop().unwrap();
         provider.stop().unwrap();
@@ -1248,7 +1307,9 @@ mod tests {
 
     #[test]
     fn downloaded_node_can_seed_after_original_provider_stops() {
-        let _guard = P2P_TEST_LOCK.lock().unwrap();
+        let _guard = P2P_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let source_dir = tempdir().unwrap();
         let middle_dir = tempdir().unwrap();
         let target_dir = tempdir().unwrap();
@@ -1296,7 +1357,13 @@ mod tests {
         let mut b = P2pService::new(middle_dir.path().join("b")).unwrap();
         b.start(Vec::new(), None).unwrap();
         let b_outcome = b
-            .download_ticket(&encoded_a, middle_dir.path(), None, |_, _| Ok(()), || Ok(TransferControl::Continue))
+            .download_ticket(
+                &encoded_a,
+                middle_dir.path(),
+                None,
+                |_, _| Ok(()),
+                || Ok(TransferControl::Continue),
+            )
             .unwrap();
         b.add_shared_files(b_outcome.seeded_files).unwrap();
         ticket.providers = vec![b.provider().unwrap()];
@@ -1307,10 +1374,19 @@ mod tests {
         c.start(Vec::new(), None).unwrap();
         let encoded_b = encode_ticket(&ticket).unwrap();
         let c_outcome = c
-            .download_ticket(&encoded_b, target_dir.path(), None, |_, _| Ok(()), || Ok(TransferControl::Continue))
+            .download_ticket(
+                &encoded_b,
+                target_dir.path(),
+                None,
+                |_, _| Ok(()),
+                || Ok(TransferControl::Continue),
+            )
             .unwrap();
 
-        assert_eq!(fs::read(&c_outcome.output_paths[0]).unwrap(), b"fuse p2p reshare track");
+        assert_eq!(
+            fs::read(&c_outcome.output_paths[0]).unwrap(),
+            b"fuse p2p reshare track"
+        );
 
         c.stop().unwrap();
         b.stop().unwrap();
